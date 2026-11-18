@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "confirmed": true,
+  "ruleSource": "演示：人工确认的住宅比例分摊，非正式测绘成果",
+  "nodes": [
+    {"id":"101","building":"B1","type":"unit"},
+    {"id":"102","building":"B1","type":"unit"},
+    {"id":"common","building":"B1","type":"pool"}
+  ],
+  "parts": [
+    {"id":"101-usable","owner":"101","kind":"usable","area":80,"factor":1,"source":"演示"},
+    {"id":"101-wall","owner":"101","kind":"wall","area":10,"factor":0.5,"source":"演示：已确认公共墙归属"},
+    {"id":"101-balcony","owner":"101","kind":"balcony","area":10,"factor":0.5,"source":"演示：未封闭阳台"},
+    {"id":"102-usable","owner":"102","kind":"usable","area":110,"factor":1,"source":"演示"},
+    {"id":"common-area","owner":"common","kind":"common","area":40,"factor":1,"source":"演示"}
+  ],
+  "groups": [
+    {"id":"residential","pool":"common","method":"area","recipients":[{"id":"101"},{"id":"102"}],"source":"演示：PDF住宅比例分摊"}
+  ],
+  "buildingTotals":{"B1":240}
+}

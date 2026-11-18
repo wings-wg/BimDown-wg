@@ -1,0 +1,111 @@
+{
+  "cases": [
+    {
+      "rule": {
+        "id": "synthetic-usable-area",
+        "version": "1",
+        "reviewed": true,
+        "source": {
+          "document": "Synthetic requirement, not a building code",
+          "locator": "case-1",
+          "text": "Confirmed bedroom usable area must be at least 5 m2"
+        },
+        "applicability": "Reviewer-confirmed synthetic bedroom",
+        "concept": "room.usable-area",
+        "unit": "m2",
+        "operator": ">=",
+        "threshold": 5
+      },
+      "datum": {
+        "object": {
+          "scope": "lv-1",
+          "table": "space",
+          "id": "sp-1"
+        },
+        "concept": "room.usable-area",
+        "unit": "m2",
+        "value": 5,
+        "source": "Synthetic reviewed measurement",
+        "modelVersion": "fixture-v1",
+        "confirmed": true
+      }
+    },
+    {
+      "rule": {
+        "id": "synthetic-usable-area",
+        "version": "1",
+        "reviewed": true,
+        "source": {
+          "document": "Synthetic requirement, not a building code",
+          "locator": "case-1",
+          "text": "Confirmed bedroom usable area must be at least 5 m2"
+        },
+        "applicability": "Reviewer-confirmed synthetic bedroom",
+        "concept": "room.usable-area",
+        "unit": "m2",
+        "operator": ">=",
+        "threshold": 5
+      },
+      "datum": {
+        "object": {
+          "scope": "lv-1",
+          "table": "space",
+          "id": "sp-1"
+        },
+        "concept": "room.usable-area",
+        "unit": "m2",
+        "value": 4.9,
+        "source": "Synthetic reviewed measurement",
+        "modelVersion": "fixture-v1",
+        "confirmed": true
+      }
+    },
+    {
+      "rule": {
+        "id": "synthetic-usable-area",
+        "version": "1",
+        "reviewed": true,
+        "source": {
+          "document": "Synthetic requirement, not a building code",
+          "locator": "case-1",
+          "text": "Confirmed bedroom usable area must be at least 5 m2"
+        },
+        "applicability": "Reviewer-confirmed synthetic bedroom",
+        "concept": "room.usable-area",
+        "unit": "m2",
+        "operator": ">=",
+        "threshold": 5
+      }
+    },
+    {
+      "rule": {
+        "id": "synthetic-usable-area",
+        "version": "1",
+        "reviewed": true,
+        "source": {
+          "document": "Synthetic requirement, not a building code",
+          "locator": "case-1",
+          "text": "Confirmed bedroom usable area must be at least 5 m2"
+        },
+        "applicability": "Reviewer-confirmed synthetic bedroom",
+        "concept": "room.usable-area",
+        "unit": "m2",
+        "operator": ">=",
+        "threshold": 5
+      },
+      "datum": {
+        "object": {
+          "scope": "lv-1",
+          "table": "space",
+          "id": "sp-1"
+        },
+        "concept": "room.gross-area",
+        "unit": "m2",
+        "value": 5,
+        "source": "Synthetic reviewed measurement",
+        "modelVersion": "fixture-v1",
+        "confirmed": true
+      }
+    }
+  ]
+}

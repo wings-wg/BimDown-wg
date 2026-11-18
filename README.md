@@ -19,6 +19,10 @@ An open-source, plain-text building data format for lightweight BIM, with a CLI,
 
 BimDown uses **CSV** for attributes and a **geometry layer** that can be encoded as either **SVG** (2D) or **GeoJSON** (2D/3D) — simple enough for any LLM to read and write, structured enough for real BIM workflows. Both geometry encodings are first-class and interchangeable; GeoJSON is the default for new projects. The included Revit add-in enables **bidirectional sync**: export from Revit to BimDown, let AI agents modify the data, then import back into Revit with changes preserved.
 
+## Local research extension
+
+This checkout includes a research prototype for PAL-assisted engineering requirements, area allocation and verifiable BIM analysis. See [research overview](research/README.md), [architecture](research/ARCHITECTURE.md), [roadmap](research/ROADMAP.md), and [implementation status](research/STATUS.md). Coding-agent guidance is in [AGENTS.md](AGENTS.md). These local capabilities are not necessarily available in the published npm package.
+
 ## Use with AI Agents (BIM Skill)
 
 BimDown is designed to be natively operated by AI agents like **OpenClaw**, **Claude Code**, **Gemini CLI**, **Cursor**, **VS Code with Copilot**, **Antigravity**, and any other agent that supports agent skills / custom instructions. By installing the **BimDown AI Agent Skill**, your LLM learns the full BIM schema, coordinate rules, and CLI usage — enabling it to create, query, and modify building models autonomously.

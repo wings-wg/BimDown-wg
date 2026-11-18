@@ -96,6 +96,9 @@ internal static class ExportPipeline
 
         WriteCsvs(outputDir, exported, levelIndex, errors);
         WriteIdMap(outputDir, idGen);
+        // Room feature evidence is independent of mesh export and precedes row mutation by WriteGeometry.
+        RunStep("Area feature evidence", errors, () =>
+            Area.AreaFeatureExporter.Write(doc, outputDir, idGen.Mappings, errors));
         WriteGeometry(outputDir, exported, levelIndex, errors);
         WriteMetadata(outputDir, doc, errors);
         if (settings.WriteIdsToModel)

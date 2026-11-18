@@ -19,6 +19,10 @@
 
 BimDown 用 **CSV** 存储属性，几何层可以用 **SVG**（二维）或 **GeoJSON**（二维/三维）两种方式编码 — 简单到任何大语言模型都能直接读写，同时又足够结构化来支撑真实的 BIM 工作流。两种几何编码都是一等公民、可互相转换；新项目默认使用 GeoJSON。内置的 Revit 插件实现了**双向同步**：从 Revit 导出到 BimDown，用 AI 或手动修改数据，再导回 Revit，改动完整保留。
 
+## 本地研究扩展
+
+本工作副本增加了“PAL辅助的BIM工程要求语义落地与可验证计算”研究原型。请阅读[研究概述](research/README.md)、[模块架构](research/ARCHITECTURE.md)、[项目路线图](research/ROADMAP.md)和[实现与验证状态](research/STATUS.md)。Codex等编码代理的仓库约定见[AGENTS.md](AGENTS.md)。本地新增命令不代表已包含在公开发布的npm包中。
+
 ## 配合 AI Agent 使用 (BIM Skill)
 
 BimDown 天生为 AI Agent 设计，支持 **OpenClaw**、**Claude Code**、**Gemini CLI**、**Cursor**、**VS Code + Copilot**、**Antigravity** 等所有支持 Agent Skill / 自定义指令的 Agent。通过安装 **BimDown AI Agent Skill**，你的小龙虾可以学习完整的 BIM 数据模式、坐标规则和 CLI 用法 — 从而自主创建、查询和修改建筑模型。

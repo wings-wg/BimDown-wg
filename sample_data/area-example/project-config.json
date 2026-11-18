@@ -1,0 +1,8 @@
+{
+  "version":1,"confirmed":true,"ruleSource":"演示：已审核的测算边界和住宅分摊",
+  "nodes":[{"id":"101","type":"unit","building":"B1"},{"id":"pool","type":"pool","building":"B1"}],
+  "selections":[{"id":"101-usable","owner":"101","level":"lv-1","table":"space","elementId":"sp-101","kind":"usable","factor":"auto","source":"演示：人工确认空间轮廓为本次测算边界","features":{"type":"room","permanent":true,"height":2.8,"variableHeight":false,"publicPassage":false,"covered":true,"enclosed":true}}],
+  "parts":[{"id":"common","owner":"pool","kind":"common","area":20,"factor":1,"source":"演示公共面积"}],
+  "groups":[{"id":"allocation","pool":"pool","method":"area","recipients":[{"id":"101"}],"source":"演示住宅比例分摊"}],
+  "buildingTotals":{"B1":100}
+}

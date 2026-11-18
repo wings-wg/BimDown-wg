@@ -82,3 +82,11 @@ export {
   type ClassReport,
   type ImportErrorCode,
 } from './ifc-import/index.js';
+
+export { calculateAreas, polygonArea, type AreaInput, type AreaPart, type AllocationNode, type AllocationGroup } from "./area/index.js";
+
+export { inferAreaFactor, type AreaFeatures, type FactorDecision } from "./area/factor.js";
+
+export { calculateProjectAreas, type ProjectAreaConfig } from "./area/project.js";
+
+export { validateRule, diagnose, executeRule, type EngineeringRule, type EngineeringDatum, type Diagnostic } from './engineering/index.js';

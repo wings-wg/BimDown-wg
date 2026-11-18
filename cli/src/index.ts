@@ -407,6 +407,50 @@ program
     await publish(dir, opts);
   });
 
+program.command('area-calculate <input>')
+  .description('Calculate reviewed area parts and hierarchical shared-area allocations (m²)')
+  .option('-o, --output <file>', 'Write auditable JSON report')
+  .action(async (input, opts) => {
+    const { areaCalculate } = await import('./area/command.js');
+    areaCalculate(input, opts);
+  });
+
+program.command('area-project <project>')
+  .description('Measure selected BIMDown GeoJSON polygons and allocate shared areas')
+  .requiredOption('-c, --config <file>', 'Reviewed ownership, rules and allocation configuration')
+  .option('-o, --output <file>', 'Write JSON report')
+  .action(async (project, opts) => {
+    try {
+      const { calculateProjectAreas } = await import('./area/project.js');
+      const { readFileSync } = await import('node:fs');
+      const result = calculateProjectAreas(project, JSON.parse(readFileSync(opts.config, 'utf8')));
+      const output = JSON.stringify(result, null, 2) + '\n';
+      if (opts.output) writeFileSync(opts.output, output); else console.log(output);
+    } catch (error) {
+      console.error(`Project area calculation failed: ${(error as Error).message}`);
+      process.exitCode = 1;
+    }
+  });
+
+program.command('engineering-check <input>')
+  .description('Execute reviewed scalar engineering rules against confirmed data contracts')
+  .option('-o, --output <file>', 'Write auditable JSON results')
+  .action(async (input, opts) => {
+    try {
+      const { readFileSync } = await import('node:fs');
+      const { executeRule } = await import('./engineering/index.js');
+      const batch = JSON.parse(readFileSync(input, 'utf8'));
+      if (!Array.isArray(batch.cases)) throw new Error('Expected cases array');
+      const results = batch.cases.map((item: any) => executeRule(item.rule, item.datum));
+      const output = JSON.stringify({ version: 1, results }, null, 2) + '\n';
+      if (opts.output) writeFileSync(opts.output, output); else console.log(output);
+      if (results.some((r: any) => r.status !== 'pass')) process.exitCode = 1;
+    } catch (error) {
+      console.error(`Engineering check failed: ${(error as Error).message}`);
+      process.exitCode = 1;
+    }
+  });
+
 program.parse();
 
 // ─── helpers ────────────────────────────────────────────
