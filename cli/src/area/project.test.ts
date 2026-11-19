@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { zipSync, strToU8 } from 'fflate';
 import { calculateProjectAreas, type ProjectAreaConfig } from './project.js';
+import { calculateProjectAreasFromText } from './project-input.js';
 const config = (): ProjectAreaConfig => ({ version: 1, confirmed: true, ruleSource: 'reviewed',
   nodes: [{ id: 'u', type: 'unit', building: 'b' }, { id: 'p', type: 'pool', building: 'b' }],
   selections: [{ id: 'a', owner: 'u', level: 'lv-1', table: 'space', elementId: 'sp1', kind: 'usable', factor: 'auto', source: 'approved outline',
@@ -16,6 +18,17 @@ function files() { return {
   'area_features.json': JSON.stringify({ version: 1, rooms: [{ id: 'sp1', covered: true, enclosed: true }] }),
 }; }
 describe('BIMDown area adapter', () => {
+  it('matches the browser text adapter with the filesystem report for the demo', () => {
+    const demo = new URL('../../../sample_data/area-example/', import.meta.url);
+    const config = JSON.parse(readFileSync(new URL('project-config.json', demo), 'utf8')) as ProjectAreaConfig;
+    const model = new URL('model/', demo);
+    const files = new Map(['project_metadata.json', 'lv-1/space.geojson'].map(path =>
+      [path, readFileSync(new URL(path, model), 'utf8')]));
+    const report = calculateProjectAreasFromText(path => files.get(path), config);
+    expect(report.units[0]).toMatchObject({ internalArea: 80, sharedArea: 20, totalArea: 100 });
+    expect(report).toEqual(calculateProjectAreas(fileURLToPath(model), config));
+  });
+
   it('calculates identical directory and archive results, converts units and consumes confirmed evidence', () => {
     const dir = mkdtempSync(join(tmpdir(), 'area-project-'));
     try {

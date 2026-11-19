@@ -23,6 +23,7 @@ BIMDown适配和算法库为支撑层；基准与实验为评价层。面积分�
 - [现状与验证缺口](STATUS.md)
 - [仓库开发约定](../AGENTS.md)
 - [面积模块输入与限制](../cli/src/area/README.md)
+- [本地 BimEditor 面积测算侧栏](../web/area/README.md)
 - [Revit证据提取](../revit-addin/Area/README.md)
 
 ## 示例

@@ -58,6 +58,7 @@ export interface JstsGeometry {
   contains(other: JstsGeometry): boolean;
   intersects(other: JstsGeometry): boolean;
   isEmpty(): boolean;
+  isValid(): boolean;
 }
 
 export type BimDownGeometry = JstsGeometry;

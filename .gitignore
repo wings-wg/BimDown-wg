@@ -29,6 +29,7 @@ Thumbs.db
 
 # Node
 node_modules/
+.bimeditor-local/
 dist/
 package-lock.json
 .env

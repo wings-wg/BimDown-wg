@@ -1,0 +1,66 @@
+.area-workspace {
+  display: flex;
+  height: 100%;
+  color: var(--text-primary, #172b31);
+}
+
+.area-editor { position: relative; flex: 1; min-width: 0; }
+.area-toggle {
+  position: absolute;
+  right: 0.75rem;
+  top: 3.5rem;
+  z-index: 41;
+  border: 1px solid #137368;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.8rem;
+  background: #08796b;
+  color: white;
+  font-size: 0.875rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.area-panel {
+  flex: 0 0 min(25rem, 46%);
+  overflow: auto;
+  padding: 6.4rem 1rem 1rem;
+  background: var(--panel-bg, #f5f8fa);
+  border-inline-start: 1px solid var(--panel-border, #c0cbd0);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.area-panel h2 { margin: 0 0 0.8rem; font-size: 1.3rem; font-weight: 700; }
+.area-panel h3 { margin: 0 0 0.4rem; font-size: 1.05rem; font-weight: 650; }
+.area-panel details { margin-block: 0.75rem; border-top: 1px solid var(--panel-border, #c0cbd0); padding-top: 0.65rem; }
+.area-panel summary { font-weight: 650; cursor: pointer; }
+.area-panel label { display: grid; gap: 0.25rem; margin-block: 0.55rem; }
+.area-panel small { font-size: 0.8rem; color: var(--text-secondary, #4f6268); overflow-wrap: anywhere; }
+.area-panel input:not([type=checkbox]), .area-panel select, .area-panel textarea, .area-panel button {
+  border: 1px solid var(--panel-border, #aebdc2);
+  border-radius: 0.35rem;
+  padding: 0.4rem 0.5rem;
+  min-width: 0;
+  color: inherit;
+  background: transparent;
+}
+.area-panel button { cursor: pointer; }
+.area-panel button:disabled { cursor: default; opacity: 0.5; }
+.area-panel textarea { resize: vertical; font-family: ui-monospace, monospace; }
+.area-panel .area-file { margin: 0; }
+.area-actions { display: flex; align-items: end; flex-wrap: wrap; gap: 0.5rem; }
+.area-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 0.6rem; }
+.area-panel .area-review { display: flex; align-items: start; gap: 0.5rem; }
+.area-review input { accent-color: #08796b; margin-top: 0.28rem; }
+.area-panel .area-primary { width: 100%; background: #08796b; color: #fff; border-color: #08796b; font-weight: 650; }
+.area-status { overflow-wrap: anywhere; margin-block: 0.5rem; }
+.area-panel table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.area-panel th, .area-panel td { border-bottom: 1px solid var(--panel-border, #c0cbd0); padding: 0.35rem; text-align: right; }
+.area-panel th:first-child { text-align: left; }
+.area-parts { margin-block: 0.4rem; padding: 0; list-style: none; }
+.area-parts li { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-block: 0.3rem; }
+.area-parts button { text-align: left; overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+  .area-panel { position: absolute; inset: 6.1rem 0 0 auto; z-index: 42; width: min(23rem, 90%); padding-top: 1rem; }
+}

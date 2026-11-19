@@ -127,10 +127,10 @@ static class GeometryUtils
     /// </summary>
     public static Curve? CreateCurveFromRow(Dictionary<string, string?> row, double z = 0)
     {
-        var startX = UnitConverter.LengthToFeet(UnitConverter.ParseDouble(row.GetValueOrDefault("start_x")));
-        var startY = UnitConverter.LengthToFeet(UnitConverter.ParseDouble(row.GetValueOrDefault("start_y")));
-        var endX = UnitConverter.LengthToFeet(UnitConverter.ParseDouble(row.GetValueOrDefault("end_x")));
-        var endY = UnitConverter.LengthToFeet(UnitConverter.ParseDouble(row.GetValueOrDefault("end_y")));
+        var startX = UnitConverter.LengthToFeet(UnitConverter.ParseDouble(row.GetValueOrDefault("start_x") ?? throw new FormatException("Missing required coordinate: start_x")));
+        var startY = UnitConverter.LengthToFeet(UnitConverter.ParseDouble(row.GetValueOrDefault("start_y") ?? throw new FormatException("Missing required coordinate: start_y")));
+        var endX = UnitConverter.LengthToFeet(UnitConverter.ParseDouble(row.GetValueOrDefault("end_x") ?? throw new FormatException("Missing required coordinate: end_x")));
+        var endY = UnitConverter.LengthToFeet(UnitConverter.ParseDouble(row.GetValueOrDefault("end_y") ?? throw new FormatException("Missing required coordinate: end_y")));
 
         var start = new XYZ(startX, startY, z);
         var end = new XYZ(endX, endY, z);

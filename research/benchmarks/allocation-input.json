@@ -1,0 +1,31 @@
+{
+  "cases": [
+    {
+      "tool": "area-allocation",
+      "modelVersion": "synthetic-allocation-v1",
+      "unit": "m2",
+      "input": {
+        "version": 1,
+        "confirmed": true,
+        "ruleSource": "Synthetic handbook, example 1: distribute the upper pool through the lower pool by internal area.",
+        "nodes": [
+          {"id": "A", "building": "B1", "type": "unit"},
+          {"id": "B", "building": "B1", "type": "unit"},
+          {"id": "upper", "building": "B1", "type": "pool"},
+          {"id": "lower", "building": "B1", "type": "pool"}
+        ],
+        "parts": [
+          {"id": "A-outline", "owner": "A", "kind": "usable", "factor": 1, "source": "Reviewed synthetic outline", "rings": [[[0,0],[10,0],[10,7],[0,7],[0,0]],[[1,1],[3,1],[3,6],[1,6],[1,1]]]},
+          {"id": "B-measure", "owner": "B", "kind": "usable", "factor": 1, "source": "Reviewed synthetic measurement", "area": 40},
+          {"id": "upper-measure", "owner": "upper", "kind": "common", "factor": 1, "source": "Reviewed synthetic measurement", "area": 10},
+          {"id": "lower-measure", "owner": "lower", "kind": "common", "factor": 1, "source": "Reviewed synthetic measurement", "area": 20}
+        ],
+        "groups": [
+          {"id": "lower-share", "pool": "lower", "method": "area", "recipients": [{"id": "A"}, {"id": "B"}], "source": "Synthetic handbook example 1"},
+          {"id": "upper-share", "pool": "upper", "method": "equal", "recipients": [{"id": "lower"}], "source": "Synthetic handbook example 1"}
+        ],
+        "buildingTotals": {"B1": 130}
+      }
+    }
+  ]
+}

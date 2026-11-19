@@ -433,18 +433,25 @@ program.command('area-project <project>')
   });
 
 program.command('engineering-check <input>')
-  .description('Execute reviewed scalar engineering rules against confirmed data contracts')
+  .description('Execute reviewed scalar checks, area allocations and projected space overlaps')
   .option('-o, --output <file>', 'Write auditable JSON results')
   .action(async (input, opts) => {
     try {
       const { readFileSync } = await import('node:fs');
       const { executeRule } = await import('./engineering/index.js');
+      const { executeAreaAllocation } = await import('./engineering/allocation.js');
+      const { executeSpaceOverlap } = await import('./engineering/overlap.js');
       const batch = JSON.parse(readFileSync(input, 'utf8'));
       if (!Array.isArray(batch.cases)) throw new Error('Expected cases array');
-      const results = batch.cases.map((item: any) => executeRule(item.rule, item.datum));
+      const results = batch.cases.map((item: any) => {
+        if (item.tool === 'area-allocation') return executeAreaAllocation(item);
+        if (item.tool === 'space-overlap') return executeSpaceOverlap(item);
+        if (item.tool !== undefined) throw new Error('Unsupported engineering tool');
+        return executeRule(item.rule, item.datum);
+      });
       const output = JSON.stringify({ version: 1, results }, null, 2) + '\n';
       if (opts.output) writeFileSync(opts.output, output); else console.log(output);
-      if (results.some((r: any) => r.status !== 'pass')) process.exitCode = 1;
+      if (results.some((r: any) => r.status !== 'pass' && r.status !== 'success')) process.exitCode = 1;
     } catch (error) {
       console.error(`Engineering check failed: ${(error as Error).message}`);
       process.exitCode = 1;

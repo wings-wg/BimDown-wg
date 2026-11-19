@@ -90,3 +90,5 @@ export { inferAreaFactor, type AreaFeatures, type FactorDecision } from "./area/
 export { calculateProjectAreas, type ProjectAreaConfig } from "./area/project.js";
 
 export { validateRule, diagnose, executeRule, type EngineeringRule, type EngineeringDatum, type Diagnostic } from './engineering/index.js';
+export { executeAreaAllocation, type AreaAllocationCase } from './engineering/allocation.js';
+export { executeSpaceOverlap, type SpaceOverlapCase } from './engineering/overlap.js';

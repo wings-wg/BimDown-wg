@@ -53,7 +53,7 @@ public static class StructureTableExporters
     /// </summary>
     public static string SlabFunction(Element e)
     {
-        var ifcAs = $"{ParameterUtils.FindStringParameterByNames(e, "IfcExportAs", "Export to IFC As")} {ParameterUtils.FindStringParameterByNames(e, "IfcExportType", "Type IFC Predefined Type", "IFC Predefined Type")}";
+        var ifcAs = $"{Extractors.ParameterUtils.FindStringParameterByNames(e, "IfcExportAs", "Export to IFC As")} {Extractors.ParameterUtils.FindStringParameterByNames(e, "IfcExportType", "Type IFC Predefined Type", "IFC Predefined Type")}";
         if (ifcAs.Contains("ROOF", StringComparison.OrdinalIgnoreCase)) return "roof";
         var typeName = e.Document.GetElement(e.GetTypeId())?.Name ?? "";
         if (typeName.Contains("roof", StringComparison.OrdinalIgnoreCase) || typeName.Contains("屋面") || typeName.Contains("屋顶")) return "roof";

@@ -1,6 +1,6 @@
 # Engineering MVP：首批契约闭环
 
-这是C1/C2/C3的最小确定性增量，不是完整首版MVP。提供手工审核规则、标量数据契约诊断、单位归一化、阈值判断及证据记录。尚无LLM转换、自动空间派生、通用工具图或完整模型加载集成。
+当前确定性链路支持手工审核的标量核查、面积分摊计划和跨层空间投影叠合。尚无LLM转换、自动空间派生、通用工具图或Engineering批次的BIMDown模型加载。
 
 构建后，从根目录执行：
 
@@ -16,4 +16,26 @@ Datum声明scope/table/id、concept、unit、value、source、modelVersion、con
 
 输出为pass/fail/indeterminate，诊断保留缺失、语义不匹配、待澄清或不支持原因；成功执行保留对象、数据来源、模型版本、规则/工具版本、原始及归一值。尚无模型哈希或完整证据图。
 
-验证：Node原生执行合成基准及异常检查通过；npm依赖安装因ENOTFOUND失败，完整构建、CLI命令与Vitest尚未执行。合成阈值不是经核实的规范限值。后续按research/ROADMAP.md扩展Rule schema、数据目录、工具契约与真实BIMDown绑定。
+## 面积分摊
+
+```bash
+node cli/dist/cli.js engineering-check research/benchmarks/allocation-input.json
+```
+
+在同一个 `cases` 数组中用 `tool: "area-allocation"` 提交面积用例。声明模型版本、`unit: "m2"` 和已确认的 `AreaInput`。坐标环使用米；每个分户须有显式面积分项。输入内节点和分项 ID 各自唯一，报告中的引用与该输入快照绑定。原有 `area-project` 仍可直接读取BIMDown项目。
+
+计算状态为 `success`、`input-incomplete` 或 `failed`。报告记录工具版本、规则来源、模型版本、分项与分摊明细，以及建筑面积守恒残差和有限数值校验。输入摘要是对 `JSON.stringify(input)` 计算的SHA-256，复算需保留原始计划。批次全部通过或成功时退出码为0。
+
+合成算例中，A的外环70 m²减去洞口10 m²得60 m²，B为40 m²。上级分摊池的10 m²和下级池的20 m²合计30 m²，按60:40分配后两户分别为78 m²和52 m²。合计130 m²。验证记录见 [STATUS](../../../research/STATUS.md)。
+
+## 跨层空间投影叠合
+
+```powershell
+node cli/dist/cli.js engineering-check research/benchmarks/overlap-input.json -o overlap-report.json
+```
+
+在 `cases` 中使用 `tool: "space-overlap"`。规则沿用审核后的标量规则结构，`concept` 为 `space.projected-overlap-area`，规则单位为 `m2`。提交两个已确认的XY多边形，声明同一模型版本、共享平面坐标系和坐标单位 `m` 或 `mm`。对象引用使用楼层作为 `scope`，不同楼层允许相同的表内短ID。坐标环须闭合，首环为外环，其余为孔洞。
+
+报告保留输入轮廓、对象、来源和以米为单位的交集 MultiPolygon，以及交叠面积和阈值。边或点接触的面积为0；缺少输入、未经确认或几何无效时返回 `indeterminate`。工具检查交叠面积有限且不超过任一输入轮廓面积，并使用规则指定的比较符直接比较阈值。算例的矩形交集为7.5 m²，扣除1 m²洞口得6.5 m²，高于合成上限5 m²，所以写出报告并返回退出码1。
+
+调用方负责选择适用对象、确认楼层关系和对齐XY坐标。当前仅计算两轮廓的平面投影交集，尚未实现自动模型选取、楼层关系推断或三维碰撞核查。
