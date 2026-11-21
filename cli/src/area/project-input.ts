@@ -18,7 +18,7 @@ export interface ProjectAreaConfig extends Omit<AreaInput, 'parts'> {
   parts?: AreaPart[];
 }
 const scales = new Map(Object.entries({ m: 1, mm: 0.001, ft: 0.3048, in: 0.0254 }));
-export function projectGeometryPath({ level, table }: ProjectAreaConfig['selections'][number]) {
+export function projectGeometryPath({ level, table }: Pick<ProjectAreaConfig['selections'][number], 'level' | 'table'>) {
   for (const segment of [level, table]) {
     if (typeof segment !== 'string' || !segment || segment === '.' || segment === '..' || /[\\/:]/.test(segment))
       throw new Error('Unsafe project path: expected a project-relative level and table name');
@@ -53,6 +53,7 @@ export function calculateProjectAreasFromText(
     const matches = fc.features?.filter((f: any) => String(f.properties?.id) === selection.elementId) ?? [];
     if (matches.length !== 1 || matches[0].geometry?.type !== 'Polygon') throw new Error(`Expected unique Polygon: ${key}`);
     const feature = matches[0];
+    if (feature.properties?.redundant === true) throw new Error(`Room duplicates another measurement outline: ${key}`);
     // Explicit adapter overrides are reviewed; only confirmed booleans from Revit are imported.
     const room = evidence?.rooms?.find((r: any) => r.id === selection.elementId);
     const features = selection.features ? { ...selection.features } : undefined;

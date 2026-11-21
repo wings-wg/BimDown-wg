@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { EditorShell, useDataSource, useEditorDispatch, useEditorState, useSelectionState } from 'bimdown-editor';
+import { EditorShell, parseCsv, useDataSource, useEditorDispatch, useEditorState, useSelectionState } from 'bimdown-editor';
 import { calculateProjectAreasFromText, projectGeometryPath } from './core/project-input.js';
 import type { ProjectAreaConfig } from './core/project-input.js';
+import { applyDoorAssignment, previewDoorAssignment } from './core/door-assignment.js';
+import { AutomaticRooms } from './AutomaticRooms.tsx';
 import './area.css';
 
 type Report = ReturnType<typeof calculateProjectAreasFromText>;
 type Selection = ProjectAreaConfig['selections'][number];
+type DoorPreview = ReturnType<typeof previewDoorAssignment> & { missingContours: Set<string> };
 const blank: ProjectAreaConfig = { version: 1, confirmed: false, ruleSource: '', nodes: [], groups: [], selections: [] };
 const json = (value: unknown) => JSON.stringify(value, null, 2);
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -32,7 +35,11 @@ function AreaPanel({ open }: { open: boolean }) {
   const [reviewed, setReviewed] = useState(false);
   const [report, setReport] = useState<Report>();
   const [notice, setNotice] = useState('');
+  const [doorNotice, setDoorNotice] = useState<{ text: string; error: boolean }>();
   const [busy, setBusy] = useState(false);
+  const [doorPreview, setDoorPreview] = useState<DoorPreview>();
+  const [insideUuid, setInsideUuid] = useState('');
+  const [unitNumber, setUnitNumber] = useState('');
   const sequence = useRef(0);
 
   useEffect(() => {
@@ -40,10 +47,12 @@ function AreaPanel({ open }: { open: boolean }) {
       sequence.current += 1;
       setReport(undefined);
       setReviewed(false);
+      setDoorPreview(undefined);
     };
     invalidate();
     const unsubscribe = ds.watchChanges(path => {
-      if (path.endsWith('.geojson') || ['project_metadata.json', 'area_features.json'].includes(path)) invalidate();
+      if (path.endsWith('.geojson') || path.endsWith('/door.csv') ||
+          ['project_metadata.json', 'area_features.json', '_IdMap.csv'].includes(path)) invalidate();
     });
     return () => {
       sequence.current += 1;
@@ -55,6 +64,7 @@ function AreaPanel({ open }: { open: boolean }) {
     sequence.current += 1;
     setReport(undefined);
     setReviewed(false);
+    setDoorPreview(undefined);
   }, [project]);
 
   function update(text: string) {
@@ -62,6 +72,7 @@ function AreaPanel({ open }: { open: boolean }) {
     setConfigText(text);
     setReviewed(false);
     setReport(undefined);
+    setDoorPreview(undefined);
     setNotice('');
   }
 
@@ -83,13 +94,20 @@ function AreaPanel({ open }: { open: boolean }) {
     update(text);
   }
 
-  async function addRoom(form: FormData) {
-    const request = sequence.current;
+  function selectedObject() {
     const [selected] = selectedIds;
     const delimiter = selected?.indexOf(':') ?? -1;
     const level = delimiter < 0 ? currentLevel : selected.slice(0, delimiter);
-    if (selectedIds.size !== 1 || !level) throw new Error('请在平面图中选中一个房间。');
+    if (selectedIds.size !== 1 || !level) return undefined;
     const elementId = delimiter < 0 ? selected : selected.slice(delimiter + 1);
+    return { level, elementId };
+  }
+
+  async function addRoom(form: FormData) {
+    const request = sequence.current;
+    const selected = selectedObject();
+    if (!selected) throw new Error('请在平面图中选中一个房间。');
+    const { level, elementId } = selected;
     const owner = String(form.get('owner')).trim();
     const source = String(form.get('source')).trim();
     const building = String(form.get('building')).trim();
@@ -115,6 +133,40 @@ function AreaPanel({ open }: { open: boolean }) {
     config.selections.push(selection);
     update(json({ ...config, confirmed: false }));
     setNotice(`已加入 ${level} / ${elementId}`);
+  }
+
+  async function previewEntrance() {
+    setDoorPreview(undefined);
+    const entry = selectedObject();
+    if (!entry || entry.level !== currentLevel) throw new Error('请在当前楼层单独选择一樘入户门。');
+    const request = sequence.current;
+    const config = parse();
+    if (!project?.floors.get(entry.level)?.layers.some(layer => layer.tableName === 'door' && layer.csvRows.has(entry.elementId)))
+      throw new Error('所选对象不是当前楼层的门。');
+    const [evidence, mapping] = await Promise.all([ds.fetchText('area_features.json'), ds.fetchText('_IdMap.csv')]);
+    if (!evidence || !mapping) throw new Error('缺少 area_features.json 或 _IdMap.csv，无法按门归户。');
+    const result = previewDoorAssignment(JSON.parse(evidence), parseCsv(mapping).map(row =>
+      ({ id: row.id, uuid: row.uuid, directory: row.directory })), entry, config);
+    const geometry = await ds.fetchText(projectGeometryPath({ level: entry.level, table: 'space' }));
+    const features: { properties?: { id?: unknown; redundant?: boolean }; geometry?: { type?: string } }[] =
+      geometry ? JSON.parse(geometry).features ?? [] : [];
+    const missingContours = new Set(result.candidates.flatMap(candidate => candidate.rooms).filter(room => {
+      const matches = features.filter(feature => String(feature.properties?.id) === room.elementId);
+      return matches.length !== 1 || matches[0].geometry?.type !== 'Polygon' || matches[0].properties?.redundant === true;
+    }).map(room => room.uuid));
+    if (request !== sequence.current) return;
+    setDoorPreview({ ...result, missingContours });
+    setInsideUuid(result.candidates.length === 1 ? result.candidates[0].inside.uuid : '');
+  }
+
+  function confirmEntrance() {
+    const candidate = doorPreview?.candidates.find(item => item.inside.uuid === insideUuid);
+    if (!doorPreview || !candidate) throw new Error('请先确认哪一侧是户内。');
+    const config = applyDoorAssignment(parse(), doorPreview, candidate, unitNumber.trim());
+    const missing = candidate.rooms.filter(room => doorPreview.missingContours.has(room.uuid)).length;
+    update(json(config));
+    setDoorNotice({ error: false, text: `已将 ${candidate.rooms.length} 个房间归入 ${unitNumber.trim()} 户。` +
+      (missing ? `其中 ${missing} 个房间须补齐可测算轮廓。` : '请在测算前审核边界与计入系数。') });
   }
 
   function addGroup(form: FormData) {
@@ -148,13 +200,21 @@ function AreaPanel({ open }: { open: boolean }) {
     }
   }
 
-  async function run(action: () => void | Promise<void>) {
+  async function run(action: () => void | Promise<void>, doorAction = false) {
     setBusy(true);
     setNotice('');
-    try { await action(); } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
+    if (doorAction) setDoorNotice(undefined);
+    try {
+      await action();
+    } catch (error) {
+      if (doorAction) setDoorNotice({ text: message(error), error: true });
+      else setNotice(message(error));
+    } finally {
+      setBusy(false);
+    }
   }
 
-  function locate(selection: Selection) {
+  function locate(selection: Pick<Selection, 'level' | 'elementId'>) {
     dispatch({ type: 'SET_LEVEL', levelId: selection.level });
     dispatch({ type: 'SELECT', ids: [`${selection.level}:${selection.elementId}`], exact: true });
   }
@@ -171,6 +231,8 @@ function AreaPanel({ open }: { open: boolean }) {
   let draft: ProjectAreaConfig | undefined;
   let configError = '';
   try { draft = parse(); } catch (error) { configError = message(error); }
+  const chosenSide = doorPreview?.candidates.find(candidate => candidate.inside.uuid === insideUuid);
+  const currentSelection = selectedObject();
 
   return (
     <aside id="area-panel" className="area-panel" aria-label="面积测算与分摊" hidden={!open}>
@@ -187,6 +249,37 @@ function AreaPanel({ open }: { open: boolean }) {
           importConfig(config);
         })}>读取项目配置</button>
       </div>
+      {open && <AutomaticRooms />}
+      <details>
+        <summary>按入户门归户</summary>
+        <p>在当前楼层选中入户门，预览与户内一侧相连的房间。</p>
+        {currentSelection && <p>当前选中 {currentSelection.level} / {currentSelection.elementId}</p>}
+        <label>户号<input value={unitNumber} disabled={busy} onChange={event => setUnitNumber(event.target.value)} /></label>
+        <button type="button" disabled={busy || !draft || selectedIds.size !== 1}
+          onClick={() => void run(previewEntrance, true)}>预览户内房间</button>
+        {doorNotice && <p role={doorNotice.error ? 'alert' : 'status'}
+          className={doorNotice.error ? 'area-status area-error' : 'area-status'}>{doorNotice.text}</p>}
+        {doorPreview && <div>
+          <p>入户门 {doorPreview.entry.level} / {doorPreview.entry.elementId}</p>
+          {doorPreview.candidates.length > 1 && <label>选择户内一侧<select value={insideUuid}
+            disabled={busy} onChange={event => setInsideUuid(event.target.value)}>
+            <option value="">请选择</option>
+            {doorPreview.candidates.map(item => <option value={item.inside.uuid} key={item.inside.uuid}>
+              {item.inside.name} · {item.inside.elementId}（{item.rooms.length} 间）
+            </option>)}
+          </select></label>}
+          {chosenSide && <>
+            <ul className="area-parts">{chosenSide.rooms.map(room =>
+              <li key={room.uuid}><button type="button" onClick={() => locate(room)}>{room.name} · {room.elementId}</button>
+                {doorPreview.missingContours.has(room.uuid) && <small>缺可测算轮廓</small>}</li>,
+            )}</ul>
+            {chosenSide.warnings.map(warning => <p className="area-status" key={warning}>{warning}</p>)}
+            <p>确认这些房间均属该户。新增分项暂按系数 1 录入，测算前仍需审核。</p>
+            <button type="button" disabled={busy || !unitNumber.trim()}
+              onClick={() => void run(confirmEntrance, true)}>确认批量归户</button>
+          </>}
+        </div>}
+      </details>
       <details open>
         <summary>添加房间 <small>{selectedIds.size === 1 ? [...selectedIds][0] : '在平面中选中一个房间'}</small></summary>
         <form onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); void run(() => addRoom(data)); }}>

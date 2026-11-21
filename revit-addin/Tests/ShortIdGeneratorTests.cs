@@ -119,6 +119,8 @@ public class ShortIdGeneratorTests : RevitApiTest
         await Assert.That(lv1Wall).IsEqualTo("w-1");
         await Assert.That(lv2Wall).IsEqualTo("w-1");
         await Assert.That(lv1Wall2).IsEqualTo("w-2");
+        await Assert.That(gen.GetDirectory("guid-a")).IsEqualTo("lv-1");
+        await Assert.That(gen.GetDirectory("guid-b")).IsEqualTo("lv-2");
 
         // Same uniqueId returns same result
         await Assert.That(gen.GetOrAssign("wall", "guid-a", "lv-1")).IsEqualTo("w-1");

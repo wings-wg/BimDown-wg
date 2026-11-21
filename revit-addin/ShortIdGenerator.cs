@@ -53,8 +53,8 @@ class ShortIdGenerator
     // Counters scoped by (directory, prefix)
     readonly Dictionary<string, Dictionary<string, int>> _dirCounters = new();
     readonly Dictionary<string, string> _uidToShort = new();
-    // Track directory for each short ID (for _IdMap)
-    readonly Dictionary<string, string> _shortToDir = new();
+    // The same short ID may belong to different elements on separate floors.
+    readonly Dictionary<string, string> _uidToDir = new();
     // Per directory: short id -> owning uid. Lets the counter skip ids already
     // claimed (e.g. seeded from stale BimDown_Id tags) while staying idempotent for
     // repeat calls with the same uid.
@@ -92,7 +92,7 @@ class ShortIdGenerator
             if (!used.TryGetValue(existing, out var owner))
             {
                 used[existing] = uniqueId;
-                _shortToDir[existing] = directory;
+                _uidToDir[uniqueId] = directory;
                 return existing;
             }
             if (owner == uniqueId)
@@ -118,7 +118,7 @@ class ShortIdGenerator
 
         used[shortId] = uniqueId;
         _uidToShort[uniqueId] = shortId;
-        _shortToDir[shortId] = directory;
+        _uidToDir[uniqueId] = directory;
         return shortId;
     }
 
@@ -224,6 +224,6 @@ class ShortIdGenerator
     /// </summary>
     internal IReadOnlyDictionary<string, string> Mappings => _uidToShort;
 
-    internal string GetDirectory(string shortId) =>
-        _shortToDir.GetValueOrDefault(shortId, "global");
+    internal string? GetDirectory(string uniqueId) =>
+        _uidToDir.GetValueOrDefault(uniqueId);
 }

@@ -101,11 +101,13 @@ internal static class AreaFeatureExporter
                     var other = from?.Id == room.Id ? to : from;
                     connections.Add(new { doorUuid = door.UniqueId, targetRoomUuid = other?.UniqueId,
                         targetId = other is null ? null : ids.GetValueOrDefault(other.UniqueId),
+                        isUnitEntrance = Confirmed(door, "IsUnitEntrance"),
                         relation = other is null ? "unresolved_or_exterior" : "door_adjacency" });
                 }
                 results.Add(new {
                     id = ids.GetValueOrDefault(room.UniqueId), uuid = room.UniqueId, name = room.Name,
                     phaseUuid = doc.GetElement(room.get_Parameter(BuiltInParameter.ROOM_PHASE).AsElementId())?.UniqueId,
+                    isCommon = Confirmed(room, "IsCommon"),
                     // Sampling evidence is deliberately not asserted as an exact coverage boolean.
                     covered = Confirmed(room, "Covered"), enclosed = Confirmed(room, "Enclosed"),
                     connectedToIndoor = Confirmed(room, "ConnectedToIndoor"),

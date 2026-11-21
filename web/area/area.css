@@ -54,12 +54,15 @@
 .area-review input { accent-color: #08796b; margin-top: 0.28rem; }
 .area-panel .area-primary { width: 100%; background: #08796b; color: #fff; border-color: #08796b; font-weight: 650; }
 .area-status { overflow-wrap: anywhere; margin-block: 0.5rem; }
+.area-error { border-inline-start: 3px solid #bf6547; padding: 0.35rem 0.55rem; background: rgb(191 101 71 / 12%); }
 .area-panel table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
 .area-panel th, .area-panel td { border-bottom: 1px solid var(--panel-border, #c0cbd0); padding: 0.35rem; text-align: right; }
 .area-panel th:first-child { text-align: left; }
 .area-parts { margin-block: 0.4rem; padding: 0; list-style: none; }
 .area-parts li { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-block: 0.3rem; }
 .area-parts button { text-align: left; overflow-wrap: anywhere; }
+.area-room-preview { max-height: 15rem; overflow: auto; }
+.area-room-preview li { padding-inline-end: 0.35rem; }
 
 @media (max-width: 760px) {
   .area-panel { position: absolute; inset: 6.1rem 0 0 auto; z-index: 42; width: min(23rem, 90%); padding-top: 1rem; }

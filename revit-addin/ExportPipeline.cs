@@ -283,8 +283,8 @@ internal static class ExportPipeline
         {
             ["id"] = kvp.Value,
             ["uuid"] = kvp.Key,
-            ["directory"] = idGen.GetDirectory(kvp.Value)
-        }).ToList();
+            ["directory"] = idGen.GetDirectory(kvp.Key)
+        }).Where(row => row["directory"] is not null).ToList();
         CsvWriter.Write(Path.Combine(outputDir, "_IdMap.csv"), ["id", "uuid", "directory"], idMapRows);
     }
 
