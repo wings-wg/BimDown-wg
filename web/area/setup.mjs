@@ -20,12 +20,16 @@ function copyChanged(from, to) {
 for (const file of ['AreaWorkspace.tsx', 'AutomaticRooms.tsx', 'UnitRoomList.tsx', 'CommonRoomAllocations.tsx',
   'common-room-allocation.ts', 'common-room-allocation.test.ts',
   'ManualRoomAssignment.tsx', 'manual-room-assignment.ts', 'manual-room-assignment.test.ts',
-  'area-deletion.ts', 'area-deletion.test.ts', 'project-area-storage.ts', 'project-area-storage.test.ts', 'area.css'])
+  'area-deletion.ts', 'area-deletion.test.ts', 'project-area-storage.ts', 'project-area-storage.test.ts', 'area.css',
+  'ModelQuestionPanel.tsx', 'ModelQuestionSettings.tsx', 'model-qa-evidence.ts', 'model-qa-evidence.test.ts',
+  'model-qa-types.ts', 'model-qa.css'])
   copyChanged(join(root, 'web', 'area', file), join(area, file));
 for (const file of ['autoRooms.ts', 'autoRooms.test.ts', 'planDoorAssignment.ts', 'planDoorAssignment.test.ts',
-  'unitRoomView.ts', 'unitRoomView.test.ts', 'measurementOutlines.ts', 'measurementOutlines.test.ts'])
+  'unitRoomView.ts', 'unitRoomView.test.ts', 'measurementOutlines.ts', 'measurementOutlines.test.ts', 'modelQaGeometry.ts'])
   copyChanged(join(root, 'web', 'area', file), join(editor, 'editor', 'src', 'state', file));
 copyChanged(join(root, 'web', 'area', 'folderLoading.test.ts'), join(editor, 'editor', 'src', 'dataSources', 'folderLoading.test.ts'));
+for (const file of ['model-qa-server.ts', 'model-qa-server.test.ts'])
+  copyChanged(join(root, 'web', 'area', file), join(editor, 'app', file));
 for (const file of ['pruneRoomOutlines.ts', 'pruneRoomOutlines.test.ts'])
   copyChanged(join(root, 'web', 'area', file), join(editor, 'editor', 'src', 'utils', file));
 for (const file of ['index.ts', 'factor.ts', 'project-input.ts', 'door-assignment.ts'])
@@ -143,6 +147,8 @@ edit('app/src/App.tsx', [
     '      onOpenSample={import.meta.env.DEV ? handleOpenSample : undefined}\n      onOpenAreaSample={handleOpenAreaSample}'],
 ]);
 edit('app/src/LandingPage.tsx', [
+  ["{t('landing.privacy', 'This editor runs entirely in your browser. No data is uploaded.')}",
+    "{i18n.language === 'zh' ? '模型在浏览器本地打开。配置语言模型后，提问会发送所需证据。' : 'Open models locally. When a language model is configured, questions send matching evidence.'}"],
   ['  onOpenSample?: () => void;', '  onOpenSample?: () => void;\n  onOpenAreaSample: () => void;'],
   ['onOpenUrl, onOpenSample }: LandingPageProps', 'onOpenUrl, onOpenSample, onOpenAreaSample }: LandingPageProps'],
   ['          {onOpenSample && (',
@@ -173,6 +179,153 @@ if (hdrStat.isFile() && hdrStat.size < 128 &&
 }
 edit('editor/src/three/SceneContent.tsx', [
   ['files="/env.hdr"', 'files="/env.hdr?bimdown-hdr=1"'],
+  [` * far enough back that every corner is in view. Runs once per opened project
+ * (an empty project is framed as soon as it gets content, e.g. the AI's first
+ * build) and on the toolbar's zoom-to-fit (`, ` * far enough back that every corner is in view. Refits when the visible floors
+ * change and on the toolbar's zoom-to-fit (`],
+  [`  useEffect(() => {
+    if (fittedFor.current !== modelName && fit()) fittedFor.current = modelName;
+  }, [fit, modelName]);`, `  const floorScope = JSON.stringify([modelName, floor3DMode, floor3DMode === 'all' ? null : currentLevel]);
+  useEffect(() => {
+    if (fittedFor.current !== floorScope && fit()) fittedFor.current = floorScope;
+  }, [fit, floorScope]);`],
+  [`    if (enabled && bounds) {
+      const planes = sectionBoxPlanes(bounds).map(() => new Plane());`, `    const floorPlanes = zRange ? [
+      new Plane(new Vector3(0, 1, 0), -zRange[0]),
+      new Plane(new Vector3(0, -1, 0), zRange[1]),
+    ] : [];
+
+    if (enabled && bounds) {
+      const planes = sectionBoxPlanes(bounds).map(() => new Plane());`],
+  ['      gl.clippingPlanes = planes;', '      gl.clippingPlanes = [...planes, ...floorPlanes];'],
+  [`    if (!zRange) { gl.clippingPlanes = []; return; }
+    gl.clippingPlanes = [
+      new Plane(new Vector3(0, 1, 0), -zRange[0]),
+      new Plane(new Vector3(0, -1, 0), zRange[1]),
+    ];`, '    gl.clippingPlanes = floorPlanes;'],
+]);
+edit('editor/src/three/FloorGroup.tsx', [
+  ['    if (doc && currentLevel) levelIds.add(currentLevel);',
+    '    if (doc?.levelId === currentLevel) levelIds.add(currentLevel);'],
+  ['      if (levelId === currentLevel && doc) {',
+    '      if (levelId === currentLevel && doc?.levelId === currentLevel) {'],
+  ['  const liveElements = liveDoc?.elements;',
+    '  const liveElements = liveDoc?.levelId === currentLevel ? liveDoc.elements : undefined;'],
+]);
+
+edit('editor/src/i18n/zh.json', [
+  ['  "levels.copySelectionHere":', '  "levels.showOnlyThisFloor": "仅显示该层",\n  "levels.copySelectionHere":'],
+]);
+edit('editor/src/i18n/en.json', [
+  ['  "levels.copySelectionHere":', '  "levels.showOnlyThisFloor": "Show only this floor",\n  "levels.copySelectionHere":'],
+]);
+edit('editor/src/components/LeftPanel.tsx', [
+  ['  x, y, onRename, onDuplicate, onCopyHere, onDelete, onClose,',
+    '  x, y, editable, onShowOnly, onShowAll, onRename, onDuplicate, onCopyHere, onDelete, onClose,'],
+  ['  x: number; y: number;\n  onRename:',
+    '  x: number; y: number;\n  editable: boolean;\n  onShowOnly: () => void;\n  onShowAll?: () => void;\n  onRename:'],
+  [`  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handle = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    window.addEventListener('mousedown', handle);
+    return () => window.removeEventListener('mousedown', handle);
+  }, [onClose]);`, `  const ref = useRef<HTMLDivElement>(null);
+  const itemClass = "flex w-full cursor-pointer items-center gap-2 border-none bg-transparent px-3 py-1.5 text-left text-[11px] hover:bg-accent";
+
+  useEffect(() => {
+    const handle = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const closeOnEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('mousedown', handle);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('mousedown', handle);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [onClose]);`],
+  [`      <button
+        className="flex w-full cursor-pointer items-center gap-2 border-none bg-transparent px-3 py-1.5 text-left text-[11px] text-foreground hover:bg-accent"
+        onClick={() => { onRename(); onClose(); }}
+      >
+        {t('levels.edit')}…
+      </button>
+      <button
+        className="flex w-full cursor-pointer items-center gap-2 border-none bg-transparent px-3 py-1.5 text-left text-[11px] text-foreground hover:bg-accent"
+        data-testid="level-duplicate"
+        onClick={() => { onDuplicate(); onClose(); }}
+      >
+        {t('levels.duplicate')}…
+      </button>
+      {onCopyHere && (
+        <button
+          className="flex w-full cursor-pointer items-center gap-2 border-none bg-transparent px-3 py-1.5 text-left text-[11px] text-foreground hover:bg-accent"
+          data-testid="level-copy-here"
+          onClick={() => { onCopyHere(); onClose(); }}
+        >
+          {t('levels.copySelectionHere')}
+        </button>
+      )}
+      <button
+        className="flex w-full cursor-pointer items-center gap-2 border-none bg-transparent px-3 py-1.5 text-left text-[11px] text-red-400 hover:bg-accent"
+        onClick={() => { onDelete(); onClose(); }}
+      >
+        {t('panel.delete')}
+      </button>`, `      <button type="button" className={cn(itemClass, 'text-foreground')} onClick={() => { onShowOnly(); onClose(); }}>
+        {t('levels.showOnlyThisFloor')}
+      </button>
+      {onShowAll && (
+        <button type="button" className={cn(itemClass, 'text-foreground')} onClick={() => { onShowAll(); onClose(); }}>
+          {t('view.floor.allTitle')}
+        </button>
+      )}
+      {editable && (
+        <div className="mt-1 border-t border-border pt-1">
+          <button type="button" className={cn(itemClass, 'text-foreground')} onClick={() => { onRename(); onClose(); }}>
+            {t('levels.edit')}…
+          </button>
+          <button type="button" className={cn(itemClass, 'text-foreground')} data-testid="level-duplicate"
+            onClick={() => { onDuplicate(); onClose(); }}>
+            {t('levels.duplicate')}…
+          </button>
+          {onCopyHere && (
+            <button type="button" className={cn(itemClass, 'text-foreground')} data-testid="level-copy-here"
+              onClick={() => { onCopyHere(); onClose(); }}>
+              {t('levels.copySelectionHere')}
+            </button>
+          )}
+          <button type="button" className={cn(itemClass, 'text-red-400')} onClick={() => { onDelete(); onClose(); }}>
+            {t('panel.delete')}
+          </button>
+        </div>
+      )}`],
+  ['  const { activeDiscipline, selectedIds, readonly, project } = editorState;',
+    '  const { activeDiscipline, selectedIds, readonly, project, viewMode, floor3DMode } = editorState;'],
+  ['              onClick={() => dispatch({ type: \'SET_LEVEL\', levelId: level.id })}',
+    `              aria-current={currentLevel === level.id ? 'true' : undefined}
+              onClick={() => {
+                if (viewMode === '2d') dispatch({ type: 'SET_FLOOR_3D_MODE', mode: 'current' });
+                dispatch({ type: 'SET_LEVEL', levelId: level.id });
+              }}`],
+  ['                if (!readonly) setContextMenu({ x: e.clientX, y: e.clientY, level });',
+    '                setContextMenu({ x: e.clientX, y: e.clientY, level });'],
+  ['          y={contextMenu.y}\n          onRename=', `          y={contextMenu.y}
+          editable={!readonly}
+          onShowOnly={() => {
+            dispatch({ type: 'SET_FLOOR_3D_MODE', mode: 'current' });
+            if (contextMenu.level.id !== currentLevel) dispatch({ type: 'SET_LEVEL', levelId: contextMenu.level.id });
+            dispatch({ type: 'SET_VIEW_MODE', mode: '3d' });
+          }}
+          onShowAll={floor3DMode === 'all' ? undefined : () => {
+            dispatch({ type: 'SET_FLOOR_3D_MODE', mode: 'all' });
+            dispatch({ type: 'SET_VIEW_MODE', mode: '3d' });
+          }}
+          onRename=`],
 ]);
 edit('editor/src/exports.ts', [
   ["import './elements/registerAll.ts';", "import './elements/registerAll.ts';\nexport { parseCsv } from './utils/loader.ts';"],
@@ -184,6 +337,15 @@ edit('editor/src/exports.ts', [
     "export { previewPlanDoorAssignment } from './state/planDoorAssignment.ts';\nexport { unitRoomView } from './state/unitRoomView.ts';\nexport { ZOOM_TO_EVENT } from './components/SchedulePanel.tsx';"],
   ["export { ZOOM_TO_EVENT } from './components/SchedulePanel.tsx';",
     "export { ZOOM_TO_EVENT } from './components/SchedulePanel.tsx';\nexport { generateMeasurementOutlines } from './state/measurementOutlines.ts';"],
+  ["export { generateMeasurementOutlines } from './state/measurementOutlines.ts';",
+    "export { generateMeasurementOutlines } from './state/measurementOutlines.ts';\nexport { describeRoomBoundaries } from './state/modelQaGeometry.ts';"],
+]);
+edit('app/vite.config.ts', [
+  ["import fs from 'fs'", "import fs from 'fs'\nimport { modelQaPlugin } from './model-qa-server.ts'"],
+  ['  plugins: [', '  plugins: [\n    modelQaPlugin(),'],
+  ["    exclude: ['bimdown-editor'],", `    exclude: ['bimdown-editor'],
+    // Avoid a dev-page reload when the lazy 3D canvas first discovers its dependencies.
+    include: ['@react-three/drei', '@react-three/fiber', '@react-three/postprocessing', 'three-mesh-bvh', 'three-stdlib'],`],
 ]);
 edit('editor/src/geometry/pickBoundary.ts', [
   ['\nfunction insidePoint(poly: Point[]): Point | null {', '\nexport function insidePoint(poly: Point[]): Point | null {'],

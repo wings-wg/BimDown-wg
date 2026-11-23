@@ -11,6 +11,7 @@ import { assignSelectedRooms } from './manual-room-assignment.js';
 import { removeAreaRooms, removeAreaUnit } from './area-deletion.js';
 import { listCommonRooms, roomPoolId, saveSelectedRoomAllocations, type RoomReference } from './common-room-allocation.js';
 import { AREA_CONFIG_PATH, getProjectAreaStore, parseProjectAreaConfig } from './project-area-storage.js';
+import { ModelQuestionPanel } from './ModelQuestionPanel.tsx';
 import './area.css';
 
 type Report = ReturnType<typeof calculateProjectAreasFromText> & { pendingCommonRooms: RoomReference[] };
@@ -26,17 +27,28 @@ type SaveStatus = { text: string; phase: 'saving' | 'saved' | 'loaded' | 'empty'
 
 export function AreaWorkspace() {
   const [open, setOpen] = useState(false);
+  const [configText, setConfigText] = useState(json(blank));
+  const [report, setReport] = useState<Report>();
   return (
-    <div className="area-workspace">
-      <div className="area-editor"><EditorShell /></div>
-      <button className="area-toggle" type="button" aria-expanded={open} aria-controls="area-panel"
-        onClick={() => setOpen(!open)}>面积测算与分摊</button>
-      <AreaPanel open={open} />
+    <div className="area-page">
+      <div className="area-workspace">
+        <div className="area-editor"><EditorShell /></div>
+        <button className="area-toggle" type="button" aria-expanded={open} aria-controls="area-panel"
+          onClick={() => setOpen(!open)}>面积测算与分摊</button>
+        <AreaPanel open={open} configText={configText} setConfigText={setConfigText} report={report} setReport={setReport} />
+      </div>
+      <ModelQuestionPanel areaDraft={configText} report={report} />
     </div>
   );
 }
 
-function AreaPanel({ open }: { open: boolean }) {
+function AreaPanel({ open, configText, setConfigText, report, setReport }: {
+  open: boolean;
+  configText: string;
+  setConfigText: (value: string) => void;
+  report?: Report;
+  setReport: (value: Report | undefined) => void;
+}) {
   const ds = useDataSource();
   const store = getProjectAreaStore(ds);
   const inArchive = useContext(AreaConfigInArchive);
@@ -44,11 +56,9 @@ function AreaPanel({ open }: { open: boolean }) {
   const { currentLevel, project, document: currentDocument } = state;
   const { selectedIds } = useSelectionState();
   const dispatch = useEditorDispatch();
-  const [configText, setConfigText] = useState(json(blank));
   const [loadedStore, setLoadedStore] = useState<typeof store>();
   const [saveStatus, setSaveStatus] = useState<SaveStatus>();
   const [reviewed, setReviewed] = useState(false);
-  const [report, setReport] = useState<Report>();
   const [notice, setNotice] = useState('');
   const [doorNotice, setDoorNotice] = useState<{ text: string; error: boolean }>();
   const [busy, setBusy] = useState(false);
@@ -75,7 +85,7 @@ function AreaPanel({ open }: { open: boolean }) {
     setDoorPreview(undefined);
     setDoorNotice(undefined);
     setNotice('');
-  }, []);
+  }, [setConfigText, setReport]);
 
   const restoreConfig = useCallback((text: string | null) => {
     const restored = text ?? json(blank);
@@ -129,13 +139,13 @@ function AreaPanel({ open }: { open: boolean }) {
       doorSequence.current += 1;
       unsubscribe();
     };
-  }, [ds]);
+  }, [ds, setReport]);
 
   useEffect(() => {
     sequence.current += 1;
     setReport(undefined);
     setReviewed(false);
-  }, [project, currentDocument]);
+  }, [project, currentDocument, setReport]);
 
   useEffect(() => {
     doorSequence.current += 1;
