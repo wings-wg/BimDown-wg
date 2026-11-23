@@ -24,6 +24,12 @@ export interface DoorCandidate {
   rooms: CandidateRoom[];
   warnings: string[];
 }
+interface DoorAssignmentPreview {
+  source?: 'floor-plan';
+  doorUuid: string;
+  entry: ScopedObject;
+  candidates: DoorCandidate[];
+}
 
 const scopedKey = ({ level, elementId }: ScopedObject) => JSON.stringify([level, elementId]);
 
@@ -129,18 +135,22 @@ export function previewDoorAssignment(
   return { doorUuid, entry, candidates };
 }
 
-export function applyDoorAssignment(
-  config: ProjectAreaConfig,
-  preview: ReturnType<typeof previewDoorAssignment>,
-  candidate: DoorCandidate,
-  unit: string,
-): ProjectAreaConfig {
+export function resolveAssignmentUnit(config: ProjectAreaConfig, unit: string): ProjectAreaConfig['nodes'][number] {
   if (!unit.trim()) throw new Error('请填写户号。');
   const owner = config.nodes.find(node => node.id === unit);
   if (owner && owner.type !== 'unit') throw new Error('该户号已用于共有池或排除节点。');
   const buildings = new Set(config.nodes.map(node => node.building));
   if (!owner && buildings.size > 1) throw new Error('配置有多栋建筑，请先在配置 JSON 中为该户号指定所属建筑。');
-  const building = owner?.building ?? [...buildings][0] ?? 'B1';
+  return owner ?? { id: unit, type: 'unit', building: [...buildings][0] ?? 'B1' };
+}
+
+export function applyDoorAssignment(
+  config: ProjectAreaConfig,
+  preview: DoorAssignmentPreview,
+  candidate: DoorCandidate,
+  unit: string,
+): ProjectAreaConfig {
+  const owner = resolveAssignmentUnit(config, unit);
   const selections = [...config.selections];
   for (const room of candidate.rooms) {
     const assigned = selections.find(item => item.table === 'space' && scopedKey(item) === scopedKey(room));
@@ -152,10 +162,14 @@ export function applyDoorAssignment(
     const id = `${room.level}/space/${room.elementId}`;
     if (selections.some(item => item.id === id) || config.parts?.some(part => part.id === id))
       throw new Error(`分项 ID ${id} 已存在，请核对原配置。`);
+    const entrance = `${preview.entry.level}/door/${preview.entry.elementId}`;
+    const evidence = preview.source === 'floor-plan'
+      ? `网页平面几何推断；入户门 ${entrance}；户内起点 ${candidate.inside.level}/space/${candidate.inside.elementId}；房间 ${id}`
+      : `area_features.json；入户门 ${entrance}（${preview.doorUuid}）；户内起点 ${candidate.inside.uuid}；房间 ${room.uuid}`;
     selections.push({ id, level: room.level, table: 'space', elementId: room.elementId, owner: unit,
       kind: 'usable', factor: 1,
-      source: `area_features.json；入户门 ${preview.entry.level}/door/${preview.entry.elementId}（${preview.doorUuid}）；户内起点 ${candidate.inside.uuid}；房间 ${room.uuid}；已确认归户，测算边界与系数待审核` });
+      source: `${evidence}；已确认归户，测算边界与系数待审核` });
   }
   return { ...config, confirmed: false, selections,
-    nodes: owner ? config.nodes : [...config.nodes, { id: unit, type: 'unit', building }] };
+    nodes: config.nodes.includes(owner) ? config.nodes : [...config.nodes, owner] };
 }

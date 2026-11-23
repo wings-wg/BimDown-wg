@@ -109,17 +109,17 @@ export function validateStructure(dir: string): string[] {
     }
   }
 
-  // Reject top-level entries other than global/, lv-{n}/, project_metadata.json,
+  // Reject top-level entries other than global/, lv-{n}/, project_metadata.json, project-config.json,
   // _IdMap.csv (UUID↔short-id map), mesh/ (GLB assets), underlays/ (tracing references)
   // and the licence / attribution notes a shared model must carry (LICENSE.txt, README.md, …).
   const topEntries = readdirSync(dir);
   for (const f of topEntries) {
     if (f === 'global' || /^lv-.+$/.test(f)) continue;
-    if (f === 'project_metadata.json') continue;
+    if (f === 'project_metadata.json' || f === 'project-config.json') continue;
     if (f === '_IdMap.csv' || ASSET_DIRS.has(f)) continue;
     if (f.startsWith('.')) continue;
     if (ROOT_NOTE_FILE.test(f)) continue;
-    issues.push(`${f}  unexpected entry in project root — only global/, lv-{n}/, mesh/, underlays/, _IdMap.csv, project_metadata.json and LICENSE/README notes are allowed`);
+    issues.push(`${f}  unexpected entry in project root — only global/, lv-{n}/, mesh/, underlays/, _IdMap.csv, project_metadata.json, project-config.json and LICENSE/README notes are allowed`);
   }
 
   issues.push(...validateUnderlayFiles(dir));

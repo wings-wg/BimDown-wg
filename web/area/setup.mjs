@@ -17,11 +17,17 @@ function copyChanged(from, to) {
   if (existsSync(to) && readFileSync(to).equals(next)) return;
   writeFileSync(to, next);
 }
-for (const file of ['AreaWorkspace.tsx', 'AutomaticRooms.tsx', 'area.css'])
+for (const file of ['AreaWorkspace.tsx', 'AutomaticRooms.tsx', 'UnitRoomList.tsx', 'CommonRoomAllocations.tsx',
+  'common-room-allocation.ts', 'common-room-allocation.test.ts',
+  'ManualRoomAssignment.tsx', 'manual-room-assignment.ts', 'manual-room-assignment.test.ts',
+  'area-deletion.ts', 'area-deletion.test.ts', 'project-area-storage.ts', 'project-area-storage.test.ts', 'area.css'])
   copyChanged(join(root, 'web', 'area', file), join(area, file));
-for (const file of ['autoRooms.ts', 'autoRooms.test.ts'])
+for (const file of ['autoRooms.ts', 'autoRooms.test.ts', 'planDoorAssignment.ts', 'planDoorAssignment.test.ts',
+  'unitRoomView.ts', 'unitRoomView.test.ts', 'measurementOutlines.ts', 'measurementOutlines.test.ts'])
   copyChanged(join(root, 'web', 'area', file), join(editor, 'editor', 'src', 'state', file));
 copyChanged(join(root, 'web', 'area', 'folderLoading.test.ts'), join(editor, 'editor', 'src', 'dataSources', 'folderLoading.test.ts'));
+for (const file of ['pruneRoomOutlines.ts', 'pruneRoomOutlines.test.ts'])
+  copyChanged(join(root, 'web', 'area', file), join(editor, 'editor', 'src', 'utils', file));
 for (const file of ['index.ts', 'factor.ts', 'project-input.ts', 'door-assignment.ts'])
   copyChanged(join(root, 'cli', 'src', 'area', file), join(area, 'core', file));
 
@@ -92,6 +98,40 @@ edit('app/src/EditorView.tsx', [
           : 'Could not load the floors. Go back and reopen the project folder or archive containing global/level.csv.'}</p>}
     </div>
   );`],
+  ["import { useTranslation } from 'react-i18next';", "import { useTranslation } from 'react-i18next';\nimport { AreaConfigInArchive } from './area/AreaWorkspace.tsx';\nimport { getProjectAreaStore } from './area/project-area-storage.js';"],
+  ['  const handleDownloadZip = useCallback(async () => {\n    if (memoryHandle) {\n      await downloadProjectAsZip(memoryHandle.getFiles(), projectName);\n    }\n  }, [memoryHandle, projectName]);', `  const areaStore = getProjectAreaStore(ds);
+  const zh = i18n.language === 'zh';
+  const saveError = zh
+    ? '无法保存项目。请在「面积测算与分摊」中查看保存状态，或下载配置备份。'
+    : 'Could not save the project. Check the area panel for details or download a configuration backup.';
+
+  const handleDownloadZip = useCallback(async () => {
+    if (!memoryHandle) return;
+    try {
+      await areaStore.flush();
+      await downloadProjectAsZip(memoryHandle.getFiles(), projectName);
+    } catch {
+      window.alert(saveError);
+    }
+  }, [areaStore, memoryHandle, projectName, saveError]);
+
+  const handleBack = useCallback(async () => {
+    try {
+      await areaStore.flush();
+    } catch {
+      if (!window.confirm(zh ? '面积配置尚未保存，确定返回首页？' : 'The area configuration is unsaved. Return to the home page?')) return;
+    }
+    onBack();
+  }, [areaStore, onBack, zh]);`],
+  ['      const handle = await pickDirectory();\n      if (memoryHandle)', '      const handle = await pickDirectory();\n      await areaStore.flush();\n      if (memoryHandle)'],
+  ['    } catch {\n      // User cancelled picker\n    }\n  }, [memoryHandle, onDataSourceChange]);', `    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) window.alert(saveError);
+    }
+  }, [areaStore, memoryHandle, onDataSourceChange, saveError]);`],
+  ['            <EditorInner projectName={projectName} />', `            <AreaConfigInArchive.Provider value={Boolean(memoryHandle)}>
+              <EditorInner projectName={projectName} />
+            </AreaConfigInArchive.Provider>`],
+  ['          onClick={onBack}', '          onClick={handleBack}'],
 ]);
 edit('app/src/App.tsx', [
   ["import { createLocalDataSource } from 'bimdown-editor';", "import { createLocalDataSource } from 'bimdown-editor';\nimport { areaSample } from './area/sample.ts';"],
@@ -138,6 +178,12 @@ edit('editor/src/exports.ts', [
   ["import './elements/registerAll.ts';", "import './elements/registerAll.ts';\nexport { parseCsv } from './utils/loader.ts';"],
   ["export { parseCsv } from './utils/loader.ts';",
     "export { parseCsv } from './utils/loader.ts';\nexport { automaticRoomName, automaticRoomPatches, previewAutomaticRooms } from './state/autoRooms.ts';"],
+  ["export { automaticRoomName, automaticRoomPatches, previewAutomaticRooms } from './state/autoRooms.ts';",
+    "export { automaticRoomName, automaticRoomPatches, previewAutomaticRooms } from './state/autoRooms.ts';\nexport { previewPlanDoorAssignment } from './state/planDoorAssignment.ts';"],
+  ["export { previewPlanDoorAssignment } from './state/planDoorAssignment.ts';",
+    "export { previewPlanDoorAssignment } from './state/planDoorAssignment.ts';\nexport { unitRoomView } from './state/unitRoomView.ts';\nexport { ZOOM_TO_EVENT } from './components/SchedulePanel.tsx';"],
+  ["export { ZOOM_TO_EVENT } from './components/SchedulePanel.tsx';",
+    "export { ZOOM_TO_EVENT } from './components/SchedulePanel.tsx';\nexport { generateMeasurementOutlines } from './state/measurementOutlines.ts';"],
 ]);
 edit('editor/src/geometry/pickBoundary.ts', [
   ['\nfunction insidePoint(poly: Point[]): Point | null {', '\nexport function insidePoint(poly: Point[]): Point | null {'],
@@ -199,6 +245,15 @@ async function collectFiles(dir: FileSystemDirectoryHandle): Promise<Map<string,
 edit('editor/src/utils/loader.ts', [
   ["  const text = await fetchIfPresent('global/level.csv');",
     "  const text = await fetchIfPresent('global/level.csv');\n  if (text === null && manifest?.has('global/level.csv')) throw new Error('Could not read global/level.csv');"],
+]);
+edit('editor/src/utils/persist.ts', [
+  ["import type { DataSource } from './dataSource.ts';",
+    "import type { DataSource } from './dataSource.ts';\nimport { persistRoomLayer } from './pruneRoomOutlines.ts';"],
+  ['    saves.push(write(csvPath, csvContent));', `    if (tableName === 'space') {
+      saves.push(persistRoomLayer(ds, levelId, groupElements.map(el => el.id), () => write(csvPath, csvContent)));
+    } else {
+      saves.push(write(csvPath, csvContent));
+    }`],
 ]);
 edit('editor/src/hooks/useLiveProject.ts', [
   ["import { useEffect, useRef } from 'react';", "import { useEffect, useRef, useState } from 'react';"],

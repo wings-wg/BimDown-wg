@@ -63,6 +63,31 @@
 .area-parts button { text-align: left; overflow-wrap: anywhere; }
 .area-room-preview { max-height: 15rem; overflow: auto; }
 .area-room-preview li { padding-inline-end: 0.35rem; }
+.area-door-confirm { margin-top: 0.55rem; }
+.area-units { margin-block: 0.75rem; border-top: 1px solid var(--panel-border, #c0cbd0); padding-top: 0.65rem; }
+.area-unit-list { margin-block: 0.35rem; padding: 0; list-style: none; max-height: 13rem; overflow: auto; }
+.area-unit-list li + li { margin-top: 0.3rem; }
+.area-unit-list li { display: flex; gap: 0.35rem; }
+.area-unit-list button { display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: 0.5rem; text-align: left; }
+.area-panel button.area-delete { color: #a5382b; }
+.area-unit-list button.area-delete { width: auto; flex-shrink: 0; }
+.area-unit-list button span { min-width: 0; overflow-wrap: anywhere; font-weight: 650; }
+.area-unit-list button small { flex-shrink: 0; }
+.area-unit-levels { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.area-units button:hover { background: rgb(8 121 107 / 8%); }
+.area-units button[aria-pressed=true] { border-color: #08796b; background: rgb(8 121 107 / 16%); }
+.area-recipients { margin-top: 0.55rem; padding-inline: 0.5rem; border: 1px solid var(--panel-border, #c0cbd0); border-radius: 0.35rem; }
+.area-recipients > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 8rem; overflow: auto; }
+.area-recipients legend { padding-inline: 0.25rem; }
+.area-recipients label { overflow-wrap: anywhere; }
+.area-room-options { margin-top: 0.5rem; padding-inline: 0.45rem; border: 1px solid var(--panel-border, #c0cbd0); border-radius: 0.35rem; }
+.area-room-options > div { max-height: 13rem; overflow: auto; }
+.area-room-options legend { padding-inline: 0.25rem; }
+.area-room-options label span { min-width: 0; overflow-wrap: anywhere; }
+.area-common-room-row { display: flex; gap: 0.4rem; align-items: center; justify-content: space-between; }
+.area-common-room-row button { flex-shrink: 0; }
+.area-common-room-status { display: block; }
+.area-current-owner { margin-inline-start: auto; padding-inline-end: 0.2rem; text-align: end; }
 
 @media (max-width: 760px) {
   .area-panel { position: absolute; inset: 6.1rem 0 0 auto; z-index: 42; width: min(23rem, 90%); padding-top: 1rem; }

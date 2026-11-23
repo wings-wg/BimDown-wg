@@ -28,6 +28,15 @@ const fixture = () => ({
 });
 
 describe('room assignment from an entrance', () => {
+  it('records geometric provenance when saving an editor room assignment', () => {
+    const { evidence, mappings } = fixture();
+    const preview = { ...previewDoorAssignment(evidence, mappings, entry, blank), source: 'floor-plan' as const };
+    const config = applyDoorAssignment(blank, preview, preview.candidates[0], '101');
+    expect(config.selections[0].source).toContain('网页平面几何推断；入户门 lv-1/door/d-1');
+    expect(config.selections.map(part => part.elementId)).toEqual(['sp-2', 'sp-3']);
+    expect(config.confirmed).toBe(false);
+  });
+
   it('reports an empty room export before checking the door scope', () => {
     expect(() => previewDoorAssignment({ version: 1, rooms: [] }, [], entry, blank)).toThrow('没有房间记录');
   });

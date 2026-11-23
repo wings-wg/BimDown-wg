@@ -38,11 +38,14 @@ describe('validateStructure — project_metadata.json', () => {
     expect(validateStructure(testDir)).toEqual(['project_metadata.json  unknown field "foo"']);
   });
 
-  it('allows licence / attribution notes in the project root, nothing else', () => {
+  it('allows area configuration and licence / attribution notes in the project root', () => {
     writeMeta({ format_version: '3.0' });
+    writeFileSync(join(testDir, 'project-config.json'), JSON.stringify({
+      version: 1, confirmed: false, ruleSource: '', nodes: [], groups: [], selections: [],
+    }));
     for (const f of ['LICENSE.txt', 'README.md', 'NOTICE', 'notes.txt']) writeFileSync(join(testDir, f), 'x');
     expect(validateStructure(testDir)).toEqual([
-      'notes.txt  unexpected entry in project root — only global/, lv-{n}/, mesh/, underlays/, _IdMap.csv, project_metadata.json and LICENSE/README notes are allowed',
+      'notes.txt  unexpected entry in project root — only global/, lv-{n}/, mesh/, underlays/, _IdMap.csv, project_metadata.json, project-config.json and LICENSE/README notes are allowed',
     ]);
   });
 

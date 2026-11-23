@@ -1,13 +1,14 @@
 import { boundaryWalls } from '../annotation/rooms.ts';
 import { insidePoint } from '../geometry/pickBoundary.ts';
 import { roomAreas } from '../geometry/roomArea.ts';
-import { BOUNDARY_TABLES, findSpaceBoundary, getSpaceFaceGraph, pointInPolygon } from '../geometry/spaceBoundary.ts';
-import type { LineElement, Point, PointElement } from '../model/elements.ts';
+import { BOUNDARY_TABLES, findSpaceBoundary, getSpaceFaceGraph, pointInPolygon, type SpaceFaceGraph } from '../geometry/spaceBoundary.ts';
+import type { CanonicalElement, LineElement, Point, PointElement } from '../model/elements.ts';
 import { generateId } from '../model/ids.ts';
 import { parseLayer } from '../model/parse.ts';
 import { cleanNumber } from '../model/serialize.ts';
 import type { EditorState } from './editorTypes.ts';
 import { levelElements, takenIds, type LevelPatches } from './levelEdits.ts';
+import type { Level } from '../types.ts';
 import { getProjectUnits, unitsPerMetreOf } from '../utils/units.ts';
 
 export interface AutomaticRoom {
@@ -21,22 +22,13 @@ export interface AutomaticRoom {
 type Scope = 'level' | 'project';
 const boundaryTables = new Set<string>(BOUNDARY_TABLES);
 
-export function automaticRoomName(levelName: string, sequence: number) {
-  return `${levelName}-room${sequence}`;
-}
-
-/** Search the wall graph used for native room placement and area labels. */
-export function previewAutomaticRooms(state: EditorState, scope: Scope) {
-  if (!state.project || state.readonly || state.groupEdit || !state.document ||
-      state.currentLevel !== state.document.levelId) throw new Error('请先打开可编辑的楼层并退出组编辑。');
-
-  const levels = [...state.project.levels].sort((a, b) => a.elevation - b.elevation);
+/** Boundary walls in global/ with a verified vertical span. */
+export function spanningRoomWalls(state: EditorState) {
+  const levels = state.project?.levels ?? [];
   const elevations = new Map(levels.map(level => [level.id, level.elevation]));
-  const elementsByLevel = new Map(levels.map(level => [level.id, levelElements(state, level.id)]));
-  const upm = unitsPerMetreOf(getProjectUnits(state));
-  const globalWalls = boundaryWalls(state.project.globalLayers.filter(layer =>
+  const walls = boundaryWalls((state.project?.globalLayers ?? []).filter(layer =>
     boundaryTables.has(layer.tableName)).flatMap(parseLayer));
-  const globalSpans = globalWalls.flatMap((wall): { wall: LineElement; bottom: number; top: number }[] => {
+  const spans = walls.flatMap((wall): { wall: LineElement; bottom: number; top: number }[] => {
     const base = elevations.get(wall.attrs.base_level_id || wall.attrs.level_id);
     if (base === undefined) return [];
     const bottom = base + (Number(wall.attrs.base_offset) || 0);
@@ -48,6 +40,48 @@ export function previewAutomaticRooms(state: EditorState, scope: Scope) {
     return top !== undefined && Number.isFinite(top) && Number.isFinite(bottom) && top > bottom
       ? [{ wall, bottom, top }] : [];
   });
+  return { spans, unscopedWalls: walls.length - spans.length };
+}
+
+export function automaticRoomName(levelName: string, sequence: number) {
+  return `${levelName}-room${sequence}`;
+}
+
+export function roomBoundaryWalls(elements: Iterable<CanonicalElement>,
+  level: Level, upm: number, spans: ReturnType<typeof spanningRoomWalls>['spans']) {
+  const walls = boundaryWalls(elements);
+  const elevation = level.elevation + 0.01 * upm;
+  for (const { wall, bottom, top } of spans) {
+    if (bottom <= elevation && top > elevation) walls.push(wall);
+  }
+  return walls;
+}
+
+/** Disconnected rings may produce overlapping faces without inner rings. */
+export function nestedRoomFaces(faces: SpaceFaceGraph['faces']) {
+  const nested = new Set<Point[]>();
+  for (const face of faces) {
+    const seed = insidePoint(face.polygon);
+    if (!seed) continue;
+    for (const outer of faces) {
+      if (outer.signedArea <= face.signedArea || outer.minX > face.minX || outer.minY > face.minY ||
+          outer.maxX < face.maxX || outer.maxY < face.maxY || !pointInPolygon(seed.x, seed.y, outer.polygon)) continue;
+      nested.add(face.polygon);
+      nested.add(outer.polygon);
+    }
+  }
+  return nested;
+}
+
+/** Search the wall graph used for native room placement and area labels. */
+export function previewAutomaticRooms(state: EditorState, scope: Scope) {
+  if (!state.project || state.readonly || state.groupEdit || !state.document ||
+      state.currentLevel !== state.document.levelId) throw new Error('请先打开可编辑的楼层并退出组编辑。');
+
+  const levels = [...state.project.levels].sort((a, b) => a.elevation - b.elevation);
+  const elementsByLevel = new Map(levels.map(level => [level.id, levelElements(state, level.id)]));
+  const upm = unitsPerMetreOf(getProjectUnits(state));
+  const { spans, unscopedWalls } = spanningRoomWalls(state);
 
   let firstNumber = 1;
   for (const elements of elementsByLevel.values()) {
@@ -68,11 +102,7 @@ export function previewAutomaticRooms(state: EditorState, scope: Scope) {
   for (const level of levels) {
     if (scope === 'level' && level.id !== state.currentLevel) continue;
     const elements = elementsByLevel.get(level.id)!;
-    const walls = boundaryWalls(elements.values());
-    const elevation = level.elevation + 0.01 * upm;
-    for (const { wall, bottom, top } of globalSpans) {
-      if (bottom <= elevation && top > elevation) walls.push(wall);
-    }
+    const walls = roomBoundaryWalls(elements.values(), level, upm, spans);
     const graph = getSpaceFaceGraph(walls);
     const occupied = new Set<Point[]>();
     for (const element of elements.values()) {
@@ -85,21 +115,11 @@ export function previewAutomaticRooms(state: EditorState, scope: Scope) {
     }
     existing += occupied.size;
 
-    const faces = graph.faces.map(face => ({ face, seed: insidePoint(face.polygon) }));
-    // Disconnected wall rings can produce nested, overlapping faces without holes.
-    const nested = new Set<Point[]>();
-    for (const { face, seed } of faces) {
-      if (!seed) continue;
-      for (const { face: outer } of faces) {
-        if (outer.signedArea <= face.signedArea || outer.minX > face.minX || outer.minY > face.minY ||
-            outer.maxX < face.maxX || outer.maxY < face.maxY || !pointInPolygon(seed.x, seed.y, outer.polygon)) continue;
-        nested.add(face.polygon);
-        nested.add(outer.polygon);
-      }
-    }
+    const nested = nestedRoomFaces(graph.faces);
     const candidates: AutomaticRoom[] = [];
-    for (const { face, seed } of faces) {
+    for (const face of graph.faces) {
       if (occupied.has(face.polygon)) continue;
+      const seed = insidePoint(face.polygon);
       if (nested.has(face.polygon) || !seed) {
         skipped++;
         continue;
@@ -118,7 +138,7 @@ export function previewAutomaticRooms(state: EditorState, scope: Scope) {
     }
     rooms.push(...candidates.sort((a, b) => b.point.y - a.point.y || a.point.x - b.point.x));
   }
-  return { rooms, firstNumber, existing, unresolved, skipped, unscopedWalls: globalWalls.length - globalSpans.length };
+  return { rooms, firstNumber, existing, unresolved, skipped, unscopedWalls };
 }
 
 /** Add native space seeds in one undoable model edit. */
