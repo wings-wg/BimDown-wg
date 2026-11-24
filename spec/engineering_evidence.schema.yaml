@@ -1,0 +1,38 @@
+name: engineering_evidence
+description: >
+  Optional engineering_evidence.json at the project root. It carries confirmed
+  measurements and object-specific applicability for registered PAL tools.
+  This is not a geometry table and does not replace BIMDown object files.
+version: 1
+fields:
+  - name: version
+    type: integer
+    required: true
+    value: 1
+  - name: modelRevision
+    type: string
+    required: true
+    description: Match engineering_revision in project_metadata.json from the same export.
+  - name: measurements
+    type: array
+    required: true
+    description: Unique per object and concept. Unconfirmed measurements never satisfy an input.
+    items:
+      object: { scope: "level directory", table: "BIMDown table", id: "table-local object ID" }
+      concept: "exact input concept printed by the tool"
+      value: "finite number"
+      unit: "m or mm"
+      source: "measurement or reviewed drawing reference"
+      confirmed: "boolean"
+      measurementGroup: "same point and vertical datum for operands of a difference"
+  - name: applicability
+    type: array
+    required: true
+    description: Unique per object, rule ID, rule version and applicability text.
+    items:
+      object: { scope: "level directory", table: "BIMDown table", id: "table-local object ID" }
+      ruleId: "rule identifier"
+      ruleVersion: "rule version shown in the report"
+      applicability: "exact applicability text of the reviewed rule"
+      decision: "applies or does-not-apply"
+      source: "reason and source for the explicit decision"

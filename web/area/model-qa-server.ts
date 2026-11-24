@@ -1,8 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { resolve } from 'node:path';
 import { loadEnv, type Plugin } from 'vite';
 import { CLOUD_QA_PROVIDERS, MAX_EVIDENCE_ITEMS, MAX_QUESTION_LENGTH, MODEL_QA_PATH, MODEL_QA_SESSION_HEADER,
   type CloudQaProvider, type ModelQaStatus, type ModelQuestion } from './src/area/model-qa-types.ts';
+import { PAL_BATCH_SIZE, PAL_PROMPT, palToolContext, parsePalClause, parsePalJson, validatePalResponse } from './src/check/pal-plan.ts';
+import { createPalLibrary } from './pal-library-server.ts';
+import { PAL_INTENT_LIMIT, palIntentPrompt, parsePalIntent } from './src/area/pal-intent.ts';
 
 const maxRequestBytes = 64 * 1024;
 const sessionLifetime = 12 * 60 * 60 * 1_000;
@@ -105,7 +109,7 @@ async function complete(fetchModel: typeof fetch, configuration: ModelConfigurat
 }
 
 /** Cloud keys are kept in server memory. The page receives an opaque session token. */
-export function createModelQaHandler(env: Record<string, string>, fetchModel: typeof fetch = fetch) {
+export function createModelQaHandler(env: Record<string, string>, fetchModel: typeof fetch = fetch, library = createPalLibrary()) {
   const model = env.BIMDOWN_QA_MODEL?.trim();
   const key = env.BIMDOWN_QA_API_KEY?.trim();
   let endpoint: URL | undefined;
@@ -157,6 +161,85 @@ export function createModelQaHandler(env: Record<string, string>, fetchModel: ty
       return reply(res, 200, { sessionId, status: describe(cloud) });
     }
 
+    if (path === '/pal/library' || path === '/pal/library/approve') {
+      try {
+        if (path === '/pal/library' && req.method === 'GET')
+          return reply(res, 200, { tools: await library.list() });
+        if (path === '/pal/library/approve' && req.method === 'POST') {
+          const body = await readJson(req) as { toolId?: unknown; reviewed?: unknown } | undefined;
+          if (body?.reviewed !== true || typeof body.toolId !== 'string' || body.toolId.length > 160)
+            return reply(res, 400, { error: '请先确认工具口径和验证结果。' });
+          const tool = await library.approve(body.toolId);
+          return reply(res, 200, { tool });
+        }
+        return reply(res, 405, { error: '不支持的工具库操作。' });
+      } catch (error) {
+        return reply(res, 400, { error: error instanceof Error ? error.message : '工具库不可用。' });
+      }
+    }
+
+    if (path === '/pal/intent') {
+      if (req.method !== 'POST') return reply(res, 405, { error: '请提交自然语言工程任务。' });
+      if (token && !active) return reply(res, 409, { error: '云端配置已失效，请在模型设置中重新配置。' });
+      if (!configuration) return reply(res, 503, { error: '尚未配置可用于 PAL 编译的语言模型。' });
+      const request = await readJson(req).catch(() => undefined) as
+        { channel?: unknown; text?: unknown; previousQuestion?: unknown } | undefined;
+      const channel = request?.channel;
+      const text = typeof request?.text === 'string' ? request.text.trim() : '';
+      const previousQuestion = request?.previousQuestion;
+      if ((channel !== 'area' && channel !== 'question') || !text || text.length > PAL_INTENT_LIMIT ||
+          (previousQuestion !== undefined && (channel !== 'question' || typeof previousQuestion !== 'string' ||
+            previousQuestion.length > PAL_INTENT_LIMIT)))
+        return reply(res, 400, { error: '工程任务入口或文本无效。' });
+      try {
+        const tools = channel === 'question' ? await library.list() : [];
+        const answer = await complete(fetchModel, configuration, [
+          { role: 'system', content: palIntentPrompt(channel) },
+          { role: 'user', content: JSON.stringify({ text, previousQuestion,
+            ...(channel === 'question' && palToolContext(tools)) }) },
+        ], 45_000);
+        let plan;
+        try { plan = parsePalIntent(parsePalJson(answer), channel, tools); } catch { /* Report an invalid plan below. */ }
+        if (!plan) return reply(res, 502, { error: '语言模型未返回当前入口支持的 PAL 计划。' });
+        const tool = plan.action === 'tool.draft'
+          ? await library.draft(plan.recipe, { model: configuration.model, clauseId: 'model-question' })
+          : plan.action === 'tool.measure' ? tools.find(entry => entry.id === plan.toolId) : undefined;
+        if (plan.action === 'tool.draft' && tool?.status === 'active')
+          return reply(res, 200, { plan: { action: 'blocked', gap: 'clarification', reason: '该工具刚启用，请重新提问。' }, tool });
+        return reply(res, 200, { plan, tool });
+      } catch (error) {
+        return reply(res, 502, { error: error instanceof Error ? error.message : 'PAL 编译暂不可用。' });
+      }
+    }
+
+    if (path === '/pal') {
+      if (req.method !== 'POST') return reply(res, 405, { error: '请通过模型核查提交条款。' });
+      if (token && !active) return reply(res, 409, { error: '云端配置已失效，请在模型设置中重新配置。' });
+      if (!configuration) return reply(res, 503, { error: '尚未配置可用于 PAL 编译的语言模型。' });
+      const request = await readJson(req).catch(() => undefined) as { clauses?: unknown } | undefined;
+      if (!Array.isArray(request?.clauses) || !request.clauses.length || request.clauses.length > PAL_BATCH_SIZE)
+        return reply(res, 400, { error: '条款批次无效或超出大小限制。' });
+      const clauses = request.clauses.map(parsePalClause);
+      if (clauses.some(clause => !clause) || new Set(clauses.map(clause => clause?.id)).size !== clauses.length)
+        return reply(res, 400, { error: '条款字段无效或编号重复。' });
+      try {
+        const tools = await library.list();
+        const answer = await complete(fetchModel, configuration, [
+          { role: 'system', content: PAL_PROMPT },
+          { role: 'user', content: JSON.stringify({ clauses, ...palToolContext(tools) }) },
+        ], 60_000);
+        let results;
+        try { results = validatePalResponse(answer, clauses.filter(clause => clause !== undefined), tools); }
+        catch { return reply(res, 502, { error: '语言模型未返回可验证的 PAL 规则列表。' }); }
+        for (const { id, plan } of results) {
+          if (plan.kind === 'tool-draft') await library.draft(plan.recipe, { model: configuration.model, clauseId: id });
+        }
+        return reply(res, 200, { results, model: configuration.model, tools: await library.list() });
+      } catch (error) {
+        return reply(res, 502, { error: error instanceof Error ? error.message : 'PAL 编译暂不可用。' });
+      }
+    }
+
     if (path !== '/') return reply(res, 404, { error: '未知的模型问答地址。' });
     if (req.method === 'GET') return reply(res, 200, token && !active ? { expired: true } : describe(configuration));
     if (req.method !== 'POST') return reply(res, 405, { error: '请通过问答表单提交问题。' });
@@ -181,13 +264,18 @@ export function createModelQaHandler(env: Record<string, string>, fetchModel: ty
 }
 
 export function modelQaPlugin(): Plugin {
+  const handler = (config: { mode: string; envDir: string | false; root: string }) => {
+    const env = loadEnv(config.mode, config.envDir, 'BIMDOWN_QA_');
+    return createModelQaHandler(env, fetch, createPalLibrary(resolve(config.root,
+      env.BIMDOWN_QA_TOOL_LIBRARY_PATH?.trim() || '.data/pal-tool-library.json')));
+  };
   return {
     name: 'bimdown-model-qa',
     configureServer(server) {
-      server.middlewares.use(MODEL_QA_PATH, createModelQaHandler(loadEnv(server.config.mode, server.config.envDir, 'BIMDOWN_QA_')));
+      server.middlewares.use(MODEL_QA_PATH, handler(server.config));
     },
     configurePreviewServer(server) {
-      server.middlewares.use(MODEL_QA_PATH, createModelQaHandler(loadEnv(server.config.mode, server.config.envDir, 'BIMDOWN_QA_')));
+      server.middlewares.use(MODEL_QA_PATH, handler(server.config));
     },
   };
 }

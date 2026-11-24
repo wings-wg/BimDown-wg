@@ -11,7 +11,9 @@ if (head !== revision) throw new Error(`Expected BimEditor revision ${revision},
 
 const src = join(editor, 'app', 'src');
 const area = join(src, 'area');
+const check = join(src, 'check');
 mkdirSync(join(area, 'core'), { recursive: true });
+mkdirSync(join(check, 'core'), { recursive: true });
 function copyChanged(from, to) {
   const next = readFileSync(from);
   if (existsSync(to) && readFileSync(to).equals(next)) return;
@@ -22,18 +24,24 @@ for (const file of ['AreaWorkspace.tsx', 'AutomaticRooms.tsx', 'UnitRoomList.tsx
   'ManualRoomAssignment.tsx', 'manual-room-assignment.ts', 'manual-room-assignment.test.ts',
   'area-deletion.ts', 'area-deletion.test.ts', 'project-area-storage.ts', 'project-area-storage.test.ts', 'area.css',
   'ModelQuestionPanel.tsx', 'ModelQuestionSettings.tsx', 'model-qa-evidence.ts', 'model-qa-evidence.test.ts',
-  'model-qa-types.ts', 'model-qa.css'])
+  'model-qa-types.ts', 'model-qa.css', 'AreaPalPlan.tsx', 'pal-client.ts', 'pal-intent.ts',
+  'DevelopmentFeedback.tsx', 'development-request.mts'])
   copyChanged(join(root, 'web', 'area', file), join(area, file));
 for (const file of ['autoRooms.ts', 'autoRooms.test.ts', 'planDoorAssignment.ts', 'planDoorAssignment.test.ts',
   'unitRoomView.ts', 'unitRoomView.test.ts', 'measurementOutlines.ts', 'measurementOutlines.test.ts', 'modelQaGeometry.ts'])
   copyChanged(join(root, 'web', 'area', file), join(editor, 'editor', 'src', 'state', file));
 copyChanged(join(root, 'web', 'area', 'folderLoading.test.ts'), join(editor, 'editor', 'src', 'dataSources', 'folderLoading.test.ts'));
-for (const file of ['model-qa-server.ts', 'model-qa-server.test.ts'])
+for (const file of ['model-qa-server.ts', 'model-qa-server.test.ts', 'pal-library-server.ts'])
   copyChanged(join(root, 'web', 'area', file), join(editor, 'app', file));
 for (const file of ['pruneRoomOutlines.ts', 'pruneRoomOutlines.test.ts'])
   copyChanged(join(root, 'web', 'area', file), join(editor, 'editor', 'src', 'utils', file));
 for (const file of ['index.ts', 'factor.ts', 'project-input.ts', 'door-assignment.ts'])
   copyChanged(join(root, 'cli', 'src', 'area', file), join(area, 'core', file));
+for (const file of ['ModelCheckPanel.tsx', 'ModelCheckLibrary.tsx', 'RoomClearHeightFields.tsx', 'check-import.ts', 'check-import.test.ts', 'check-model.ts', 'check-xlsx.ts',
+  'pal-plan.ts', 'tool-evidence.ts', 'export-feedback.ts', 'storey-height.ts', 'storey-height.test.ts', 'model-check.css'])
+  copyChanged(join(root, 'web', 'check', file), join(check, file));
+for (const file of ['index.ts', 'rule-set.ts', 'clear-height.ts', 'decimal.ts', 'tool-recipes.ts'])
+  copyChanged(join(root, 'cli', 'src', 'engineering', file), join(check, 'core', file));
 
 const demo = join(root, 'sample_data', 'area-example');
 const roomGeometry = JSON.parse(readFileSync(join(demo, 'model', 'lv-1', 'space.geojson'), 'utf8'));

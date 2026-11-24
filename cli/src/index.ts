@@ -458,6 +458,24 @@ program.command('engineering-check <input>')
     }
   });
 
+program.command('engineering-rule-set <rules> <evidence>')
+  .description('Run reviewed scalar rules against an independently supplied target inventory')
+  .option('-o, --output <file>', 'Write auditable JSON results')
+  .action(async (rules, evidence, opts) => {
+    try {
+      const { readFileSync } = await import('node:fs');
+      const { runScalarRuleSet } = await import('./engineering/rule-set.js');
+      const report = runScalarRuleSet(JSON.parse(readFileSync(rules, 'utf8')), JSON.parse(readFileSync(evidence, 'utf8')));
+      const output = JSON.stringify(report, null, 2) + '\n';
+      if (opts.output) writeFileSync(opts.output, output); else console.log(output);
+      if (report.results.some(result => result.status === 'fail' || result.status === 'indeterminate'))
+        process.exitCode = 1;
+    } catch (error) {
+      console.error(`Engineering rule set failed: ${(error as Error).message}`);
+      process.exitCode = 1;
+    }
+  });
+
 program.parse();
 
 // ─── helpers ────────────────────────────────────────────

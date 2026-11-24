@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useDataSource, useEditorDispatch, useEditorState, useSelectionState } from 'bimdown-editor';
-import { collectModelEvidence } from './model-qa-evidence.js';
+import { collectModelEvidence, collectToolMeasurements } from './model-qa-evidence.js';
 import { ModelQuestionSettings } from './ModelQuestionSettings.tsx';
-import { MAX_QUESTION_LENGTH, MODEL_QA_PATH, MODEL_QA_SESSION_HEADER, type ModelEvidence, type ModelQaInfo } from './model-qa-types.js';
+import { MAX_QUESTION_LENGTH, MODEL_QA_PATH, MODEL_QA_SESSION_HEADER, type ModelEvidence, type ModelQaConnection, type ModelQaInfo } from './model-qa-types.js';
 import type { calculateProjectAreasFromText } from './core/project-input.js';
+import { TOOL_PROFILES } from '../check/core/tool-recipes.js';
+import { MAX_CLAUSE_TEXT_LENGTH } from '../check/check-import.js';
+import { compilePalIntent } from './pal-client.js';
+import type { PalIntent } from './pal-intent.js';
 import './model-qa.css';
 
 type Turn = {
@@ -13,6 +17,7 @@ type Turn = {
   answer?: string;
   model?: string;
   error?: string;
+  plan?: PalIntent;
 };
 const storageKey = 'bimdown-model-qa-session';
 
@@ -27,9 +32,12 @@ function formatFact(value: unknown): string {
   return String(value);
 }
 
-export function ModelQuestionPanel({ report, areaDraft }: {
+export function ModelQuestionPanel({ report, areaDraft, onConnectionChange, openCheck, toolDrafted }: {
   report?: ReturnType<typeof calculateProjectAreasFromText>;
   areaDraft: string;
+  onConnectionChange?: (connection: ModelQaConnection) => void;
+  openCheck: (text?: string) => void;
+  toolDrafted: () => void;
 }) {
   const ds = useDataSource();
   const state = useEditorState();
@@ -46,6 +54,10 @@ export function ModelQuestionPanel({ report, areaDraft }: {
   const request = useRef<AbortController | undefined>(undefined);
   const activeSession = useRef(sessionId);
   const provider = configuration?.model && configuration.host ? configuration : undefined;
+
+  useEffect(() => {
+    onConnectionChange?.({ sessionId, configuration });
+  }, [sessionId, configuration, onConnectionChange]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -89,9 +101,29 @@ export function ModelQuestionPanel({ report, areaDraft }: {
     setExpanded(true);
     setTurn(undefined);
     try {
-      result.evidence = await collectModelEvidence(state, selectedIds, ds, prompt, previousQuestion, report, areaDraft);
-      if (controller.signal.aborted) return;
+      let compilation: Awaited<ReturnType<typeof compilePalIntent>> | undefined;
       if (provider) {
+        try {
+          compilation = await compilePalIntent('question', prompt, sessionId, controller.signal, previousQuestion);
+          if (controller.signal.aborted) return;
+          result.plan = compilation.plan;
+          if (result.plan.action === 'tool.draft') toolDrafted();
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          result.error = `PAL 计划生成失败，已切换为本地证据查询。 ${error instanceof Error ? error.message : ''}`;
+        }
+      }
+      const plan = result.plan;
+      if (plan && plan.action !== 'model.query' && plan.action !== 'tool.measure') return;
+      if (plan?.action === 'tool.measure') {
+        const tool = compilation?.tool;
+        if (!tool || tool.id !== plan.toolId) throw new Error('PAL 未返回可核验的量测工具。');
+        result.evidence = await collectToolMeasurements(state, selectedIds, ds, tool, plan.scope, prompt, previousQuestion);
+      } else {
+        result.evidence = await collectModelEvidence(state, selectedIds, ds, prompt, previousQuestion, report, areaDraft, plan?.scope);
+      }
+      if (controller.signal.aborted) return;
+      if (provider && plan && result.evidence.length) {
         const response = await fetch(MODEL_QA_PATH, {
           method: 'POST', signal: controller.signal,
           headers: { 'Content-Type': 'application/json', ...(sessionId && { [MODEL_QA_SESSION_HEADER]: sessionId }) },
@@ -127,11 +159,22 @@ export function ModelQuestionPanel({ report, areaDraft }: {
       {turn && <>
         <div className="model-qa-question">{turn.question}</div>
         {turn.error && <p role="alert" className="model-qa-error">{turn.error}</p>}
+        {turn.plan?.action === 'blocked' && <p role="status">
+          {turn.plan.gap === 'missing-tool' ? '缺少工具' : '需要澄清'} · {turn.plan.reason}
+        </p>}
+        {turn.plan?.action === 'tool.draft' && <p>
+          已保存候选工具「{TOOL_PROFILES[turn.plan.recipe.concept].title}」。启用后可再次提问。
+          {' '}<button type="button" onClick={() => openCheck()}>审核 PAL 工具</button>
+        </p>}
+        {turn.plan?.action === 'check.clause' && <p>{turn.question.length <= MAX_CLAUSE_TEXT_LENGTH
+          ? <button type="button" onClick={() => openCheck(turn.question)}>将原文交给模型核查</button>
+          : '请将要求拆成 800 字以内的独立条款，再到模型核查编译。'}</p>}
         {turn.answer ? <>
           <p className="model-qa-model">{turn.model ?? '语言模型'}</p>
           <div className="model-qa-answer">{turn.answer}</div>
-        </> : <p className="model-qa-model">{turn.evidence.length ? '本地查询结果' : '当前没有可用的模型证据。'}</p>}
-        {turn.evidence.length > 0 && <details open={!turn.answer}>
+        </> : (!turn.plan || turn.plan.action === 'model.query' || turn.plan.action === 'tool.measure') &&
+          <p className="model-qa-model">{turn.evidence.length ? '本地查询结果' : '当前没有可用的模型证据。'}</p>}
+        {turn.evidence.length > 0 && <details open={!turn.answer || turn.evidence.some(item => 'BIMDown导出文件' in item.facts)}>
           <summary>模型证据（{turn.evidence.length}）</summary>
           <ol className="model-qa-sources">
             {turn.evidence.map((evidence, index) => <li key={`${index}-${evidence.source}`}>

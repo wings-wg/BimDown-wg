@@ -1,0 +1,30 @@
+{
+  "modelVersion": "synthetic-storeys-v1",
+  "targets": [
+    {
+      "object": { "scope": "global", "table": "level", "id": "lv-1" },
+      "applicability": [
+        { "ruleId": "synthetic-storey-height", "ruleVersion": "1", "decision": "applies", "source": "Synthetic fixture review" }
+      ],
+      "measurements": [
+        { "concept": "storey.architectural-height", "unit": "mm", "value": 3000, "source": "Synthetic confirmed measurement", "confirmed": true }
+      ]
+    },
+    {
+      "object": { "scope": "global", "table": "level", "id": "lv-2" },
+      "applicability": [
+        { "ruleId": "synthetic-storey-height", "ruleVersion": "1", "decision": "applies", "source": "Synthetic fixture review" }
+      ],
+      "measurements": [
+        { "concept": "room.finished-clear-height", "unit": "m", "value": 2.8, "source": "Synthetic clear-height evidence", "confirmed": true }
+      ]
+    },
+    {
+      "object": { "scope": "global", "table": "level", "id": "lv-roof" },
+      "applicability": [
+        { "ruleId": "synthetic-storey-height", "ruleVersion": "1", "decision": "does-not-apply", "source": "Synthetic fixture review: roof datum" }
+      ],
+      "measurements": []
+    }
+  ]
+}

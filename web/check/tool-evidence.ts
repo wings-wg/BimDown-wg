@@ -1,0 +1,156 @@
+import { parseCsv, type DataSource } from 'bimdown-editor';
+import type { EngineeringDatum } from './core/index.js';
+import type { ScalarEvidenceSet } from './core/rule-set.js';
+import { executeToolRecipe, parseToolRecipe, textPresent, TOOL_PROFILES, toolId, type ToolEntry, type ToolMeasurement, type ToolRecipe } from './core/tool-recipes.js';
+import type { CheckItem } from './check-import.js';
+
+export const TOOL_EVIDENCE_PATH = 'engineering_evidence.json';
+type Reader = Pick<DataSource, 'fetchText'>;
+type ObjectRef = EngineeringDatum['object'];
+type Target = ScalarEvidenceSet['targets'][number];
+type Applicable = Target['applicability'][number] & { object: ObjectRef; applicability: string };
+type Fact = ToolMeasurement & { object: ObjectRef; concept: string };
+const objectId = ({ scope, table, id }: ObjectRef) => JSON.stringify([scope, table, id]);
+const validRef = (value: ObjectRef | undefined) => value && [value.scope, value.table, value.id].every(textPresent);
+
+function parseEvidence(text: string | null, projectRevision?: string) {
+  const facts = new Map<string, Map<string, Fact>>();
+  const duplicate = new Set<string>();
+  const applicability = new Map<string, Applicable>();
+  if (!text) return { facts, duplicate, applicability };
+  const value = JSON.parse(text) as { version?: number; modelRevision?: string; measurements?: Fact[]; applicability?: Applicable[] };
+  if (value?.version !== 1 || !Array.isArray(value.measurements) || !Array.isArray(value.applicability) ||
+      value.measurements.length + value.applicability.length > 100_000)
+    throw new Error(`${TOOL_EVIDENCE_PATH} 格式无效或超过限制。`);
+  if (!textPresent(projectRevision) || value.modelRevision !== projectRevision)
+    throw new Error('证据文件的 modelRevision 必须匹配 project_metadata.json 的 engineering_revision。');
+  for (const fact of value.measurements) {
+    if (!fact || !validRef(fact.object) || !textPresent(fact.concept) || !Number.isFinite(fact.value) ||
+        !['m', 'mm'].includes(fact.unit) || !textPresent(fact.source) || typeof fact.confirmed !== 'boolean')
+      throw new Error(`${TOOL_EVIDENCE_PATH} 包含无效的测量记录。`);
+    const key = objectId(fact.object);
+    const measurements = facts.get(key) ?? new Map<string, Fact>();
+    if (measurements.has(fact.concept)) duplicate.add(JSON.stringify([key, fact.concept]));
+    measurements.set(fact.concept, fact);
+    facts.set(key, measurements);
+  }
+  for (const entry of value.applicability) {
+    if (!entry || !validRef(entry.object) || ![entry.ruleId, entry.ruleVersion, entry.source, entry.applicability].every(textPresent) ||
+        !['applies', 'does-not-apply'].includes(entry.decision))
+      throw new Error(`${TOOL_EVIDENCE_PATH} 包含无效的适用性记录。`);
+    const id = JSON.stringify([objectId(entry.object), entry.ruleId, entry.ruleVersion, entry.applicability]);
+    if (applicability.has(id)) {
+      duplicate.add(id);
+    } else applicability.set(id, entry);
+  }
+  return { facts, duplicate, applicability };
+}
+
+export function toolDataContract(recipe: ToolRecipe) {
+  const profile = TOOL_PROFILES[recipe.concept];
+  return {
+    files: [`<楼层>/${profile.table}.csv`, TOOL_EVIDENCE_PATH, 'project_metadata.json'],
+    fields: ['构件作用域/表/ID', ...recipe.inputs, 'unit', 'source', 'confirmed', 'modelRevision / engineering_revision',
+      ...(recipe.operation === 'difference' ? ['measurementGroup'] : [])],
+    advice: profile.exportAdvice,
+  };
+}
+
+export async function readScopedToolMeasurements(ds: Reader, tool: ToolEntry, objects: ObjectRef[]) {
+  const recipe = parseToolRecipe(tool.recipe);
+  if (!recipe || tool.status !== 'active' || tool.id !== toolId(recipe))
+    throw new Error('量测工具未启用或版本无效。');
+  if (objects.some(object => object.table !== TOOL_PROFILES[recipe.concept].table ||
+      !validRef(object) || /[\\/:]/.test(object.scope) || object.scope === '.' || object.scope === '..'))
+    throw new Error('量测对象缺少有效的楼层、构件表或 ID。');
+  const paths = [...new Set(objects.map(object => `${object.scope}/${object.table}.csv`))];
+  const [text, metadata, tables] = await Promise.all([
+    ds.fetchText(TOOL_EVIDENCE_PATH), ds.fetchText('project_metadata.json'),
+    Promise.all(paths.map(async path => [path, parseCsv((await ds.fetchText(path) ?? '').replace(/^\uFEFF/, ''))] as const)),
+  ]);
+  let parsed: ReturnType<typeof parseEvidence>;
+  try {
+    parsed = parseEvidence(text, metadata ? JSON.parse(metadata)?.engineering_revision : undefined);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : '工程证据文件无效。';
+    return objects.map(object => ({ object, result: { reason } }));
+  }
+  const rows = new Map(tables);
+  return objects.map(object => {
+    const key = objectId(object);
+    if (rows.get(`${object.scope}/${object.table}.csv`)?.filter(row => row.id === object.id).length !== 1 ||
+        recipe.inputs.some(field => parsed.duplicate.has(JSON.stringify([key, field]))))
+      return { object, result: { reason: '构件或量测记录缺失、重复，无法唯一绑定。' } };
+    return { object, result: executeToolRecipe(recipe, parsed.facts.get(key) ?? new Map()) };
+  });
+}
+
+export async function readToolEvidence(ds: Reader, levels: { id: string; name: string }[], items: CheckItem[], metadata: string | null) {
+  const tables = [...new Set(items.map(item => item.rule!.targetTable))];
+  const [text, sources] = await Promise.all([ds.fetchText(TOOL_EVIDENCE_PATH),
+    Promise.all(levels.flatMap(level => tables.map(async table => ({
+      level, table, text: await ds.fetchText(`${level.id}/${table}.csv`),
+    }))))]);
+  let parsed: ReturnType<typeof parseEvidence>;
+  let evidenceError: string | undefined;
+  try {
+    const projectRevision = metadata ? JSON.parse(metadata)?.engineering_revision : undefined;
+    parsed = parseEvidence(text, projectRevision);
+  }
+  catch (error) {
+    parsed = parseEvidence(null);
+    evidenceError = error instanceof Error ? error.message : '证据文件无效。';
+  }
+  const objects = new Map<string, { object: ObjectRef; name: string }>();
+  const ambiguous = new Set<string>();
+  for (const { level, table, text: csv } of sources) {
+    if (!csv) continue;
+    for (const row of parseCsv(csv.replace(/^\uFEFF/, ''))) {
+      if (!textPresent(row.id)) continue;
+      const object = { scope: level.id, table, id: row.id };
+      const key = objectId(object);
+      if (objects.has(key)) ambiguous.add(key);
+      objects.set(key, { object, name: `${level.name} · ${row.name || row.number || row.id}` });
+    }
+  }
+  if (objects.size * items.length > 20_000)
+    throw new Error('工具核查对象超过 20,000 项，请拆分规则文件。');
+
+  return {
+    snapshot: JSON.stringify([text, sources]),
+    cases: items.map(item => {
+      const rule = item.rule!;
+      const tool = item.libraryTool!;
+      const recipe = tool.recipe;
+      if (tool.status !== 'active' || tool.id !== toolId(recipe) || recipe.concept !== rule.concept ||
+          TOOL_PROFILES[recipe.concept].table !== rule.targetTable || rule.unit !== 'm')
+        throw new Error('规则和启用的工具版本不匹配。');
+      const details = new Map<string, { name: string; detail?: string; inputs?: ToolMeasurement[] }>();
+      const targets: Target[] = [];
+      for (const [key, { object, name }] of objects) {
+        if (object.table !== rule.targetTable) continue;
+        const scopeKey = JSON.stringify([key, rule.id, rule.version, rule.applicability]);
+        const repeated = ambiguous.has(key) || parsed.duplicate.has(scopeKey) ||
+          recipe.inputs.some(field => parsed.duplicate.has(JSON.stringify([key, field])));
+        const scope = repeated ? undefined : parsed.applicability.get(scopeKey);
+        const record: Target = { object, applicability: scope ? [scope] : [], measurements: [] };
+        let detail = evidenceError;
+        let inputs: ToolMeasurement[] | undefined;
+        if (repeated) detail = '对象短 ID、适用性或量测记录重复，无法唯一绑定。';
+        else if (!scope && !detail) detail = `缺少本规则版本、适用范围及对象的确认记录（${TOOL_EVIDENCE_PATH}）。`;
+        else if (scope?.decision === 'applies') {
+          const result = executeToolRecipe(recipe, parsed.facts.get(key) ?? new Map());
+          if (result.value === undefined) detail = result.reason;
+          else {
+            inputs = result.measurements;
+            record.measurements.push({ concept: recipe.concept, value: result.value, unit: result.unit, confirmed: true,
+              source: inputs.map(input => input.source).join('；') });
+          }
+        }
+        details.set(key, { name, detail, inputs });
+        targets.push(record);
+      }
+      return { rule, tool, targets, getDetail: (object: ObjectRef) => details.get(objectId(object)), evidenceError };
+    }),
+  };
+}

@@ -2,6 +2,9 @@ export const MODEL_QA_PATH = '/api/bimdown/model-qa';
 export const MODEL_QA_SETTINGS_PATH = `${MODEL_QA_PATH}/settings`;
 export const MODEL_QA_TEST_PATH = `${MODEL_QA_SETTINGS_PATH}/test`;
 export const MODEL_QA_SESSION_HEADER = 'x-bimdown-qa-session';
+export const MODEL_PAL_PATH = `${MODEL_QA_PATH}/pal`;
+export const MODEL_PAL_INTENT_PATH = `${MODEL_PAL_PATH}/intent`;
+export const MODEL_PAL_LIBRARY_PATH = `${MODEL_PAL_PATH}/library`;
 export const CLOUD_QA_PROVIDERS = {
   deepseek: { label: 'DeepSeek', endpoint: 'https://api.deepseek.com/chat/completions', model: 'deepseek-flash' },
   openai: { label: 'OpenAI', endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4.1-mini' },
@@ -33,3 +36,4 @@ export interface ModelQaStatus {
 }
 
 export type ModelQaInfo = Partial<ModelQaStatus> & { expired?: boolean };
+export type ModelQaConnection = { sessionId: string; configuration?: ModelQaInfo };

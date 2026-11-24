@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "id": "synthetic-storey-height",
+      "version": "1",
+      "reviewed": true,
+      "source": {
+        "document": "Synthetic benchmark, not a building code",
+        "locator": "storey-height",
+        "text": "Use 3 m as the minimum architectural storey height for this fixture."
+      },
+      "applicability": "Confirmed residential storeys in the synthetic inventory",
+      "targetTable": "level",
+      "concept": "storey.architectural-height",
+      "unit": "m",
+      "operator": ">=",
+      "threshold": 3
+    }
+  ]
+}

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { loadProject, type EditorState } from 'bimdown-editor';
 import { createMemoryDataSource } from 'bimdown-editor/data-sources';
-import { collectModelEvidence } from './model-qa-evidence.js';
+import { collectModelEvidence, collectToolMeasurements } from './model-qa-evidence.js';
+import { toolId, type ToolEntry, type ToolRecipe } from '../check/core/tool-recipes.js';
 import { areaSample } from './sample.ts';
 
 async function sample(extra: [string, string][] = []) {
@@ -12,6 +13,35 @@ async function sample(extra: [string, string][] = []) {
 }
 
 describe('model question evidence', () => {
+  it('keeps explicit selection separate from objects named in the question', async () => {
+    const { state, dataSource } = await sample();
+    const evidence = await collectModelEvidence(state, new Set(['sp-102']), dataSource, 'sp-101 和所选房间',
+      undefined, undefined, undefined, 'selection');
+    expect(evidence.flatMap(item => item.target?.elementId ?? [])).toEqual(['sp-102', 'sp-102']);
+  });
+
+  it('only measures the scoped object with confirmed evidence from the current revision', async () => {
+    const concept = 'space.finished-minimum-clear-height';
+    const recipe: ToolRecipe = { concept, operation: 'read', inputs: [concept] };
+    const tool: ToolEntry = { id: toolId(recipe), version: 1, recipe, status: 'active', createdAt: 'fixture',
+      origin: { model: 'fixture', clauseId: 'fixture' } };
+    const object = { scope: 'lv-1', table: 'space', id: 'sp-101' };
+    const files = (revision: string): [string, string][] => [
+      ['project_metadata.json', JSON.stringify({ format_version: '2', units: 'm', engineering_revision: 'current' })],
+      ['engineering_evidence.json', JSON.stringify({ version: 1, modelRevision: revision, applicability: [],
+        measurements: [{ object, concept, value: 2620, unit: 'mm', source: '合成完成面截面', confirmed: true }] })],
+    ];
+    const current = await sample(files('current'));
+    const measure = (model: typeof current) => collectToolMeasurements(model.state, new Set(['sp-101']),
+      model.dataSource, tool, 'selection', '所选房间最低净高');
+    expect(await measure(current)).toMatchObject([{ target: { level: 'lv-1', elementId: 'sp-101' },
+      facts: { 量测值m: 2.62, 确认来源: ['合成完成面截面'] } }]);
+    const stale = await measure(await sample(files('previous')));
+    expect(stale[0].facts).toMatchObject({ 诊断: expect.stringContaining('engineering_revision'),
+      BIMDown导出文件: expect.arrayContaining(['engineering_evidence.json']), 必要字段: expect.arrayContaining([concept]) });
+    expect(stale[0].facts).not.toHaveProperty('量测值m');
+  });
+
   it('grounds room area and attribution in scoped evidence and reports the net height gap', async () => {
     const { state, dataSource } = await sample();
     const evidence = await collectModelEvidence(state, new Set(), dataSource, 'sp-101 的面积、归属和净高');

@@ -16,6 +16,18 @@ Datum声明scope/table/id、concept、unit、value、source、modelVersion、con
 
 输出为pass/fail/indeterminate，诊断保留缺失、语义不匹配、待澄清或不支持原因；成功执行保留对象、数据来源、模型版本、规则/工具版本、原始及归一值。尚无模型哈希或完整证据图。
 
+## 独立规则包与证据清单
+
+```bash
+node cli/dist/cli.js engineering-rule-set research/benchmarks/scalar-rule-set.json research/benchmarks/scalar-evidence-set.json
+```
+
+规则包的 `rules` 沿用标量规则，加上 `targetTable`。每个规则 ID 在规则包内唯一。证据清单声明 `modelVersion`，在 `targets` 中按 `scope/table/id` 列出对象、带来源的 `measurements`，以及绑定规则 ID 和版本的 `applicability` 确认记录。执行器按表筛选目标，按工程概念选用已确认的测量，同一份测量可以被多条规则引用。修改阈值、运算符或适用条件时应更新规则版本并复核对应的适用性记录。
+
+只有确认适用且有匹配证据的对象才进行比较。已确认排除的对象记为 `not-applicable`。未审核规则、缺少适用性确认、缺少测量或表内无目标均记为 `indeterminate`。报告中的结果仅覆盖提供的对象清单，当前不自动证明整栋模型的覆盖完整性。报告含 `fail` 或 `indeterminate` 时退出码为 1。命令尚未从 Excel 生成规则或从 BIMDown 自动提取证据。
+
+样例使用合成层高证据。3000 mm 在配置下限 3 m 时通过，净高证据不能替代建筑层高，屋面标高点有显式排除记录。下限改为 3.1 m 后，使用同一测量可得到不通过。数值用于验证配置行为，正式项目需审查规范版本、适用条件和取数口径。
+
 ## 面积分摊
 
 ```bash

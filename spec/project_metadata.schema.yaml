@@ -42,6 +42,13 @@ fields:
     type: string
     description: Export source (e.g. "Revit 2026", "BimDown CLI")
 
+  - name: engineering_revision
+    type: string
+    description: |
+      Optional identifier for the export revision used by engineering_evidence.json.
+      Supply a new identifier when the model or evidence measurements change.
+      The matching evidence sidecar must repeat this identifier as modelRevision.
+
   - name: spatial_z
     type: enum
     values: [absolute]

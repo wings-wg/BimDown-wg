@@ -12,6 +12,10 @@ import { removeAreaRooms, removeAreaUnit } from './area-deletion.js';
 import { listCommonRooms, roomPoolId, saveSelectedRoomAllocations, type RoomReference } from './common-room-allocation.js';
 import { AREA_CONFIG_PATH, getProjectAreaStore, parseProjectAreaConfig } from './project-area-storage.js';
 import { ModelQuestionPanel } from './ModelQuestionPanel.tsx';
+import { ModelCheckPanel } from '../check/ModelCheckPanel.tsx';
+import type { ModelQaConnection } from './model-qa-types.js';
+import { AreaPalPlan } from './AreaPalPlan.tsx';
+import { DevelopmentFeedback } from './DevelopmentFeedback.tsx';
 import './area.css';
 
 type Report = ReturnType<typeof calculateProjectAreasFromText> & { pendingCommonRooms: RoomReference[] };
@@ -26,28 +30,56 @@ export const AreaConfigInArchive = createContext(false);
 type SaveStatus = { text: string; phase: 'saving' | 'saved' | 'loaded' | 'empty' | 'error'; error?: string };
 
 export function AreaWorkspace() {
-  const [open, setOpen] = useState(false);
+  const [panel, setPanel] = useState<'area' | 'check' | 'feedback'>();
+  const [checkMounted, setCheckMounted] = useState(false);
   const [configText, setConfigText] = useState(json(blank));
   const [report, setReport] = useState<Report>();
+  const [modelConnection, setModelConnection] = useState<ModelQaConnection>();
+  const [libraryRevision, setLibraryRevision] = useState(0);
+  const [textDraft, setTextDraft] = useState('');
+  const ds = useDataSource();
+  useEffect(() => setTextDraft(''), [ds]);
+
+  function openCheck(text?: string) {
+    if (text !== undefined) setTextDraft(text);
+    setCheckMounted(true);
+    setPanel('check');
+  }
   return (
     <div className="area-page">
       <div className="area-workspace">
         <div className="area-editor"><EditorShell /></div>
-        <button className="area-toggle" type="button" aria-expanded={open} aria-controls="area-panel"
-          onClick={() => setOpen(!open)}>面积测算与分摊</button>
-        <AreaPanel open={open} configText={configText} setConfigText={setConfigText} report={report} setReport={setReport} />
+        <div className="area-tools">
+          <button className="area-toggle" type="button" aria-expanded={panel === 'area'} aria-controls="area-panel"
+            onClick={() => setPanel(panel === 'area' ? undefined : 'area')}>面积测算与分摊</button>
+          <button className="area-toggle model-check-toggle" type="button" aria-expanded={panel === 'check'} aria-controls="model-check-panel"
+            onClick={() => {
+              setCheckMounted(true);
+              setPanel(panel === 'check' ? undefined : 'check');
+            }}>模型核查</button>
+          <button className="area-toggle feedback-toggle" type="button" aria-expanded={panel === 'feedback'}
+            aria-controls="development-feedback" onClick={() => setPanel(panel === 'feedback' ? undefined : 'feedback')}>功能建议</button>
+        </div>
+        <AreaPanel open={panel === 'area'} configText={configText} setConfigText={setConfigText} report={report} setReport={setReport}
+          connection={modelConnection} openCheck={openCheck} />
+        {checkMounted && <ModelCheckPanel open={panel === 'check'} close={() => setPanel(undefined)} connection={modelConnection}
+          libraryRevision={libraryRevision} textDraft={textDraft} setTextDraft={setTextDraft} />}
+        <DevelopmentFeedback open={panel === 'feedback'} close={() => setPanel(undefined)} />
       </div>
-      <ModelQuestionPanel areaDraft={configText} report={report} />
+      <ModelQuestionPanel areaDraft={configText} report={report} onConnectionChange={setModelConnection} openCheck={openCheck}
+        toolDrafted={() => setLibraryRevision(value => value + 1)} />
     </div>
   );
 }
 
-function AreaPanel({ open, configText, setConfigText, report, setReport }: {
+function AreaPanel({ open, configText, setConfigText, report, setReport, connection, openCheck }: {
   open: boolean;
   configText: string;
   setConfigText: (value: string) => void;
   report?: Report;
   setReport: (value: Report | undefined) => void;
+  connection?: ModelQaConnection;
+  openCheck: (text: string) => void;
 }) {
   const ds = useDataSource();
   const store = getProjectAreaStore(ds);
@@ -73,6 +105,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport }: {
   const doorSequence = useRef(0);
   const assignedUnits = useRef<HTMLElement>(null);
   const ruleSourceField = useRef<HTMLInputElement>(null);
+  const outlineDetails = useRef<HTMLDetailsElement>(null);
   const liveSource = useRef({ ds, project, currentDocument, currentLevel });
   liveSource.current = { ds, project, currentDocument, currentLevel };
 
@@ -245,10 +278,14 @@ function AreaPanel({ open, configText, setConfigText, report, setReport }: {
     setReport(undefined);
     const paths = new Set(['project_metadata.json', 'area_features.json', ...config.selections.map(projectGeometryPath)]);
     const files = new Map(await Promise.all([...paths].map(async path => [path, await ds.fetchText(path)] as const)));
-    const missing = config.selections.find(item => item.table === 'space' && !files.get(projectGeometryPath(item)));
+    const metadata = files.get('project_metadata.json');
+    if (!metadata || !['m', 'mm', 'ft', 'in'].includes(JSON.parse(metadata)?.units))
+      throw new Error('请补导出 project_metadata.json，并在 units 声明与模型轮廓一致的坐标单位。');
+    const missing = config.selections.find(item => !files.get(projectGeometryPath(item)));
     if (missing) {
       const floor = levelNames.get(missing.level) ?? missing.level;
-      throw new Error(`${floor} 缺少房间轮廓。请在该楼层的「测算轮廓」中点击「生成测算轮廓」。`);
+      const repair = missing.table === 'space' ? '请生成房间轮廓，或' : '请';
+      throw new Error(`${floor} 缺少测算几何。${repair}从 BIMDown 补导出 ${projectGeometryPath(missing)}，保留与构件表一致的 ID、边界和坐标单位。`);
     }
     const result = calculateProjectAreasFromText(path => files.get(path) ?? undefined, config);
     if (request === sequence.current) {
@@ -257,7 +294,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport }: {
     }
   }
 
-  async function generateOutlines() {
+  async function generateOutlines(scope = outlineScope) {
     setOutlineResult(undefined);
     setOutlineError('');
     const isCurrent = () => {
@@ -266,7 +303,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport }: {
         live.currentLevel === currentLevel;
     };
     try {
-      const result = await generateMeasurementOutlines(state, ds, outlineScope, isCurrent);
+      const result = await generateMeasurementOutlines(state, ds, scope, isCurrent);
       if (liveSource.current.ds !== ds) return;
       setOutlineResult(result);
       if (result.generated) {
@@ -356,6 +393,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport }: {
     : saveStatus.phase === 'saved' && inArchive ? '归户及分摊配置已更新。请下载右上角的 ZIP 或保存到文件夹。'
     : saveStatus.phase === 'saved' ? '归户及分摊配置已保存到项目文件夹。'
     : saveStatus.phase === 'loaded' ? '已读取项目配置。' : '';
+  const outlineUnavailable = !currentDocument || currentDocument.levelId !== currentLevel || state.readonly || !!state.groupEdit;
 
   if (loadedStore !== store) return (
     <aside id="area-panel" className="area-panel" aria-label="面积测算与分摊" hidden={!open}>
@@ -366,6 +404,13 @@ function AreaPanel({ open, configText, setConfigText, report, setReport }: {
   return (
     <aside id="area-panel" className="area-panel" aria-label="面积测算与分摊" hidden={!open}>
       <header><h2>面积测算与分摊</h2></header>
+      <AreaPalPlan connection={connection} floor={{ id: currentLevel, name: levelNames.get(currentLevel) }}
+        busy={busy} canCalculate={reviewed && !!draft?.ruleSource.trim()} canOutline={!outlineUnavailable}
+        calculate={() => void run(calculate)} openCheck={openCheck} outline={scope => {
+          setOutlineScope(scope);
+          if (outlineDetails.current) outlineDetails.current.open = true;
+          void run(() => generateOutlines(scope));
+        }} />
       <div className="area-actions">
         <label className="area-file">导入配置<input type="file" accept=".json" disabled={busy} onChange={event => {
           const file = event.currentTarget.files?.[0];
@@ -382,7 +427,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport }: {
       {saveStatus?.phase === 'error' && draft && <button type="button" disabled={busy}
         onClick={() => void run(() => update(configText))}>重试保存配置</button>}
       {open && <AutomaticRooms />}
-      <details>
+      <details ref={outlineDetails}>
         <summary>测算轮廓</summary>
         <p>沿墙中心线提取已有房间的边界，补齐对应楼层的测算轮廓文件。</p>
         <label>轮廓生成范围<select value={outlineScope} disabled={busy} onChange={event => {
@@ -393,8 +438,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport }: {
           <option value="level">当前楼层（{levelNames.get(currentLevel) ?? currentLevel}）</option>
           <option value="project">全部楼层</option>
         </select></label>
-        <button type="button" disabled={busy || !currentDocument || currentDocument.levelId !== currentLevel ||
-          state.readonly || !!state.groupEdit} onClick={() => void run(generateOutlines)}>生成测算轮廓</button>
+        <button type="button" disabled={busy || outlineUnavailable} onClick={() => void run(generateOutlines)}>生成测算轮廓</button>
         {outlineError && <p role="alert" className="area-status area-error">{outlineError}</p>}
         {outlineResult && <div>
           <p className="area-status" role="status">

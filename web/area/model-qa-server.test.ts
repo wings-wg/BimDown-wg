@@ -1,8 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createModelQaHandler } from './model-qa-server.ts';
 import { MODEL_QA_SESSION_HEADER } from './src/area/model-qa-types.ts';
+import { createPalLibrary } from './pal-library-server.ts';
 
 const configured = {
   BIMDOWN_QA_MODEL: 'test-bim-model',
@@ -26,6 +30,92 @@ async function invoke(handler: ReturnType<typeof createModelQaHandler>, method: 
 }
 
 describe('model question gateway', () => {
+  it('compiles area requests without forwarding project data and rejects actions from another entrance', async () => {
+    const complete = (plan: object) => Response.json({ choices: [{ message: { content: JSON.stringify(plan) } }] });
+    const provider = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(complete({ action: 'area.outlines', scope: 'level' }))
+      .mockResolvedValueOnce(complete({ action: 'area.allocate' }))
+      .mockResolvedValueOnce(complete({ action: 'area.allocate', factors: [1] }));
+    const handler = createModelQaHandler(configured, provider);
+    const text = '给当前层生成测算轮廓';
+    expect(await invoke(handler, 'POST', { channel: 'area', text, evidence: ['geometry'] }, {}, '/pal/intent'))
+      .toEqual({ code: 200, data: { plan: { action: 'area.outlines', scope: 'level' } } });
+    const messages = JSON.parse(String(provider.mock.calls[0][1]?.body)).messages;
+    expect(JSON.parse(messages[1].content)).toEqual({ text });
+    expect((await invoke(handler, 'POST', { channel: 'question', text }, {}, '/pal/intent')).code).toBe(502);
+    expect((await invoke(handler, 'POST', { channel: 'area', text }, {}, '/pal/intent')).code).toBe(502);
+  });
+
+  it('stores a question tool draft and only resolves it as a measurement after approval', async () => {
+    const concept = 'door.effective-clear-width';
+    const toolId = `pal.${concept}.read@1`;
+    let proposal: object = { action: 'tool.draft', recipe: { concept, operation: 'read', inputs: [concept] } };
+    const provider = vi.fn<typeof fetch>().mockImplementation(async () =>
+      Response.json({ choices: [{ message: { content: JSON.stringify(proposal) } }] }));
+    const handler = createModelQaHandler(configured, provider);
+    const body = { channel: 'question', text: '量一下我选中的门开启后有效通行净宽' };
+    expect(await invoke(handler, 'POST', body, {}, '/pal/intent')).toMatchObject({ code: 200, data: {
+      plan: { action: 'tool.draft' }, tool: { id: toolId, status: 'draft' },
+    } });
+    proposal = { action: 'tool.measure', toolId, scope: 'selection' };
+    expect((await invoke(handler, 'POST', body, {}, '/pal/intent')).code).toBe(502);
+    await invoke(handler, 'POST', { toolId, reviewed: true }, {}, '/pal/library/approve');
+    expect(await invoke(handler, 'POST', body, {}, '/pal/intent')).toMatchObject({ code: 200, data: {
+      plan: proposal, tool: { id: toolId, status: 'active' },
+    } });
+  });
+
+  it('compiles a grounded PAL plan and forwards only named clause fields to the model', async () => {
+    const proposal = { id: 'NEW', kind: 'scalar', scope: 'project-storeys', concept: 'storey.architectural-height',
+      operator: '>=', threshold: '3100 mm' };
+    const provider = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
+      choices: [{ message: { content: JSON.stringify({ rules: [proposal] }) } }],
+    }));
+    const handler = createModelQaHandler(configured, provider);
+    const clause = { id: 'NEW', target: '楼层', attribute: '建筑层高', condition: '住宅楼层的建筑层高不得小于 3100 mm。',
+      limit: '', reference: '', applicability: '项目住宅楼层', note: '' };
+    const body = { clauses: [{ ...clause, path: '/private/path' }], evidence: ['private geometry'] };
+    const response = await invoke(handler, 'POST', body, {}, '/pal');
+    expect(response).toMatchObject({ code: 200, data: { model: configured.BIMDOWN_QA_MODEL, results: [
+      { id: 'NEW', plan: { kind: 'scalar', threshold: 3.1, quote: '3100 mm' } },
+    ] } });
+    expect(JSON.parse(JSON.parse(String(provider.mock.calls[0][1]?.body)).messages[1].content)).toMatchObject({
+      clauses: [clause], activeTools: [], profiles: expect.any(Object),
+    });
+    expect(String(provider.mock.calls[0][1]?.body)).not.toMatch(/private geometry|private\/path/);
+    expect((await invoke(handler, 'POST', { clauses: [clause, clause] }, {}, '/pal')).code).toBe(400);
+    expect((await invoke(createModelQaHandler({}, provider), 'POST', body, {}, '/pal')).code).toBe(503);
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it('validates and stores a draft, requires approval, and offers the active tool after restart', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bimdown-pal-library-'));
+    const file = join(dir, 'library.json');
+    const concept = 'slab.cast-in-place-solid-structural-thickness';
+    const draft = { id: 'SLAB-1', kind: 'tool-draft', recipe: { concept, operation: 'read', inputs: [concept] },
+      operator: '>=', threshold: '100 mm' };
+    const provider = vi.fn<typeof fetch>().mockImplementation(async () =>
+      Response.json({ choices: [{ message: { content: JSON.stringify({ rules: [draft] }) } }] }));
+    const row = { id: 'SLAB-1', target: '现浇实心楼板', attribute: '结构层厚', condition: '厚度不得小于 100 mm。',
+      limit: '', reference: '', applicability: '已核实为现浇实心楼板', note: '' };
+    try {
+      const first = createModelQaHandler(configured, provider, createPalLibrary(file));
+      const candidate = await invoke(first, 'POST', { clauses: [row] }, {}, '/pal');
+      expect(candidate.data).toMatchObject({ results: [{ plan: { kind: 'tool-draft' } }], tools: [{ status: 'draft' }] });
+      const readyId = `pal.${concept}.read@1`;
+      expect((await invoke(first, 'POST', { toolId: readyId }, {}, '/pal/library/approve')).code).toBe(400);
+      expect((await invoke(first, 'POST', { toolId: readyId, reviewed: true }, {}, '/pal/library/approve')).data)
+        .toMatchObject({ tool: { status: 'active', verification: expect.arrayContaining(['单位换算', '证据缺失']) } });
+      const second = createModelQaHandler(configured, provider, createPalLibrary(file));
+      const reused = await invoke(second, 'POST', { clauses: [row] }, {}, '/pal');
+      expect(reused.data).toMatchObject({ results: [{ plan: { kind: 'registered-tool', toolId: readyId } }],
+        tools: [{ id: readyId, status: 'active' }] });
+      expect(JSON.parse(JSON.parse(String(provider.mock.calls[1][1]?.body)).messages[1].content)).toMatchObject({
+        activeTools: [{ id: readyId }],
+      });
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   it('sends only numbered evidence to the fixed endpoint and keeps the token server-side', async () => {
     const provider = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
       choices: [{ message: { content: '该房间面积为 80 m² [E1]。' } }],
