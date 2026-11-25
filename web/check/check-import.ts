@@ -1,8 +1,10 @@
 import { validateRule, type EngineeringRule } from './core/index.js';
 import { validateClearHeightRule, type ClearHeightRule } from './core/clear-height.js';
 import type { ScalarRuleSet } from './core/rule-set.js';
-import { HEIGHT, ROOM_NET_AREA, parsePalClause, scalarBindings, type PalClause, type PalPlan } from './pal-plan.js';
+import { HEIGHT, ROOM_NET_AREA, localStoreyHeightPlan, parsePalClause, scalarBindings, type PalClause, type PalPlan } from './pal-plan.js';
 import { parseToolRecipe, TOOL_PROFILES, toolId, type ToolEntry } from './core/tool-recipes.js';
+import { DOOR_WIDTH, validateDoorWidthRule, type DoorWidthRule } from './door-width.js';
+import { validateSpaceOverlapRule, type SpaceOverlapRule } from './space-overlap.js';
 
 export { HEIGHT, ROOM_NET_AREA } from './pal-plan.js';
 type Rule = ScalarRuleSet['rules'][number];
@@ -12,10 +14,13 @@ export interface CheckItem {
   source: EngineeringRule['source'];
   rule?: Rule;
   clearHeightRule?: ClearHeightRule;
+  doorWidthRule?: DoorWidthRule;
+  overlapRule?: SpaceOverlapRule;
   reason?: string;
   clause?: PalClause;
   plan?: PalPlan;
   libraryTool?: ToolEntry;
+  compiledLocally?: boolean;
 }
 export type SheetRow = { number: number; cells: ReadonlyMap<number, string>; formulaColumns: ReadonlySet<number> };
 export const MAX_CLAUSE_TEXT_LENGTH = 800;
@@ -40,7 +45,19 @@ function ensureItems(items: CheckItem[]) {
 export function importJsonRules(text: string, tools: readonly ToolEntry[] = []): CheckItem[] {
   const parsed = JSON.parse(text);
   if (!Array.isArray(parsed?.rules)) throw new Error('JSON 文件须包含 rules 数组。');
-  return ensureItems(parsed.rules.map((rule: (Rule & { registeredToolId?: string }) | ClearHeightRule): CheckItem => {
+  return ensureItems(parsed.rules.map((rule: (Rule & { registeredToolId?: string }) | ClearHeightRule | DoorWidthRule | SpaceOverlapRule): CheckItem => {
+    if (rule && 'kind' in rule && rule.kind === 'space-projection-exclusion') {
+      validateSpaceOverlapRule(rule);
+      const base = { id: rule.id, source: rule.source, title: '跨层空间投影叠合' };
+      return rule.reviewed ? { ...base, overlapRule: rule } : { ...base, reason: '规则包中的条款尚未审核。' };
+    }
+    if (rule && 'kind' in rule && rule.kind === 'door-clear-width-by-use') {
+      validateDoorWidthRule(rule);
+      const base = { id: rule.id, source: rule.source, title: '按用途核查门有效通行净宽' };
+      const libraryTool = tools.find(tool => tool.id === rule.registeredToolId && tool.status === 'active');
+      return rule.reviewed && libraryTool ? { ...base, doorWidthRule: rule, libraryTool }
+        : { ...base, reason: '规则或指定的门净宽工具尚未审核启用。' };
+    }
     if (rule && 'kind' in rule && rule.kind === 'clear-height-with-local-exception') {
       validateClearHeightRule(rule);
       const base = { id: rule.id, source: rule.source, title: '房间完成面净高及局部例外' };
@@ -66,18 +83,33 @@ export function importJsonRules(text: string, tools: readonly ToolEntry[] = []):
 
 export function bindPalPlan(item: CheckItem, plan: PalPlan, tools: readonly ToolEntry[] = []): CheckItem {
   if (!item.clause) return item;
-  const base = { ...item, plan, rule: undefined, clearHeightRule: undefined, libraryTool: undefined, reason: undefined };
+  const base = { ...item, plan, rule: undefined, clearHeightRule: undefined, doorWidthRule: undefined,
+    overlapRule: undefined, libraryTool: undefined, reason: undefined };
   if (plan.kind === 'blocked') return { ...base, reason: plan.reason };
   const common = { id: item.id, source: item.source, version: 'pal-1', reviewed: false,
     applicability: item.clause.applicability || item.clause.target || '适用范围须由审核人确认' };
   try {
-    if (plan.kind === 'registered-tool' || plan.kind === 'tool-draft') {
+    if (plan.kind === 'space-projection-exclusion') {
+      const overlapRule = { ...common, kind: plan.kind };
+      validateSpaceOverlapRule(overlapRule);
+      return { ...base, overlapRule };
+    }
+    if (plan.kind === 'registered-tool' || plan.kind === 'tool-draft' || plan.kind === 'door-clear-width-by-use') {
       const recipe = parseToolRecipe(plan.recipe);
       const libraryTool = tools.find(tool => tool.id === plan.toolId && tool.status === 'active');
       if (!recipe || !libraryTool || toolId(recipe) !== libraryTool.id)
         return { ...base, reason: '候选工具待审核启用。' };
+      if (plan.kind === 'door-clear-width-by-use') {
+        if (recipe.concept !== DOOR_WIDTH) throw new Error('unsupported binding');
+        const doorWidthRule = { ...common, kind: plan.kind, thresholds: plan.thresholds, registeredToolId: libraryTool.id };
+        validateDoorWidthRule(doorWidthRule);
+        return { ...base, doorWidthRule, libraryTool };
+      }
       const binding = TOOL_PROFILES[recipe.concept];
-      const rule = { ...common, targetTable: binding.table, unit: binding.unit, concept: recipe.concept,
+      const note = item.clause.note;
+      const applicability = recipe.concept === 'slab.cast-in-place-solid-structural-thickness' && /悬挑|空心|叠合/.test(note)
+        ? `${common.applicability}；仅已确认适用此基本限值的现浇实心楼板。另判依据：${note}` : common.applicability;
+      const rule = { ...common, applicability, targetTable: binding.table, unit: binding.unit, concept: recipe.concept,
         operator: plan.operator, threshold: plan.threshold };
       validateRule(rule);
       return { ...base, plan: { ...plan, kind: 'registered-tool' }, rule, libraryTool };
@@ -98,6 +130,17 @@ export function bindPalPlan(item: CheckItem, plan: PalPlan, tools: readonly Tool
     }
   } catch { /* An invalid server response remains pending. */ }
   return { ...base, reason: '规则无法绑定到本地核查工具。' };
+}
+
+export function bindLocalStoreyHeight(item: CheckItem): CheckItem {
+  const clause = item.clause;
+  if (!clause) return item;
+  const plan = localStoreyHeightPlan(clause);
+  if (!plan) return item;
+  const bound = bindPalPlan({ ...item, clause: {
+    ...clause, applicability: `${clause.applicability} · ${clause.limit}`,
+  } }, plan);
+  return bound.rule ? { ...bound, clause: item.clause, compiledLocally: true } : item;
 }
 
 const sheetColumns = [

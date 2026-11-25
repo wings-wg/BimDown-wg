@@ -7,6 +7,7 @@ import { CLOUD_QA_PROVIDERS, MAX_EVIDENCE_ITEMS, MAX_QUESTION_LENGTH, MODEL_QA_P
 import { PAL_BATCH_SIZE, PAL_PROMPT, palToolContext, parsePalClause, parsePalJson, validatePalResponse } from './src/check/pal-plan.ts';
 import { createPalLibrary } from './pal-library-server.ts';
 import { PAL_INTENT_LIMIT, palIntentPrompt, parsePalIntent } from './src/area/pal-intent.ts';
+import { editorIntentHasGroundedTarget, isEditorIntent } from './src/area/editor-commands.ts';
 
 const maxRequestBytes = 64 * 1024;
 const sessionLifetime = 12 * 60 * 60 * 1_000;
@@ -201,6 +202,8 @@ export function createModelQaHandler(env: Record<string, string>, fetchModel: ty
         let plan;
         try { plan = parsePalIntent(parsePalJson(answer), channel, tools); } catch { /* Report an invalid plan below. */ }
         if (!plan) return reply(res, 502, { error: '语言模型未返回当前入口支持的 PAL 计划。' });
+        if (isEditorIntent(plan) && !editorIntentHasGroundedTarget(plan, text))
+          return reply(res, 200, { plan: { action: 'blocked', gap: 'clarification', reason: '请明确要切换的楼层名称或编号。' } });
         const tool = plan.action === 'tool.draft'
           ? await library.draft(plan.recipe, { model: configuration.model, clauseId: 'model-question' })
           : plan.action === 'tool.measure' ? tools.find(entry => entry.id === plan.toolId) : undefined;
@@ -232,7 +235,8 @@ export function createModelQaHandler(env: Record<string, string>, fetchModel: ty
         try { results = validatePalResponse(answer, clauses.filter(clause => clause !== undefined), tools); }
         catch { return reply(res, 502, { error: '语言模型未返回可验证的 PAL 规则列表。' }); }
         for (const { id, plan } of results) {
-          if (plan.kind === 'tool-draft') await library.draft(plan.recipe, { model: configuration.model, clauseId: id });
+          if (plan.kind === 'tool-draft' || plan.kind === 'door-clear-width-by-use')
+            await library.draft(plan.recipe, { model: configuration.model, clauseId: id });
         }
         return reply(res, 200, { results, model: configuration.model, tools: await library.list() });
       } catch (error) {

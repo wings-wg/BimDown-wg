@@ -1,12 +1,25 @@
-export interface ModelLevel { id: string; name: string; elevation?: number }
+export interface ModelLevel {
+  id: string;
+  name: string;
+  elevation?: number;
+  usage?: string;
+  elevationBasis?: string;
+  elevationSource?: string;
+  upperLevelId?: string;
+}
 
 export type StoreyChoice =
   | { mode: 'upper'; id: string }
   | { mode: 'manual'; height: string; source: string }
   | { mode: 'pending' | 'excluded' };
 
+export function isRoofDatum(level: ModelLevel) {
+  return level.usage === 'roof-datum' || !level.usage && /^(?:屋顶|屋面|机房顶|roof)$/i.test(level.name.trim());
+}
+
 export function suggestStoreyChoices(levels: ModelLevel[]): Map<string, StoreyChoice> {
   const byElevation = new Map<number, string[]>();
+  const byId = new Map(levels.map(level => [level.id, level]));
   for (const { elevation, id } of levels) {
     if (elevation === undefined || !Number.isFinite(elevation)) continue;
     const ids = byElevation.get(elevation) ?? [];
@@ -18,9 +31,20 @@ export function suggestStoreyChoices(levels: ModelLevel[]): Map<string, StoreyCh
   for (let i = 0; i + 1 < elevations.length; i++) {
     const lower = byElevation.get(elevations[i])!;
     const upper = byElevation.get(elevations[i + 1])!;
-    if (lower.length === 1 && upper.length === 1) suggestions.set(lower[0], { mode: 'upper', id: upper[0] });
+    if (lower.length !== 1) continue;
+    const level = byId.get(lower[0])!;
+    if (isRoofDatum(level)) continue;
+    const upperId = level.upperLevelId ?? (upper.length === 1 ? upper[0] : undefined);
+    const counterpart = upperId && byId.get(upperId);
+    if (counterpart && isStoreyPair(level, counterpart)) suggestions.set(level.id, { mode: 'upper', id: counterpart.id });
   }
   return suggestions;
+}
+
+export function isStoreyPair(lower: ModelLevel, upper: ModelLevel) {
+  const compatible = (level: ModelLevel) => !level.elevationBasis || level.elevationBasis === 'architectural-finish';
+  return lower.elevation !== undefined && upper.elevation !== undefined && lower.elevation < upper.elevation &&
+    compatible(lower) && compatible(upper);
 }
 
 export function storeyHeightMetres(lower?: number, upper?: number, scale?: number) {

@@ -14,6 +14,7 @@ const area = join(src, 'area');
 const check = join(src, 'check');
 mkdirSync(join(area, 'core'), { recursive: true });
 mkdirSync(join(check, 'core'), { recursive: true });
+mkdirSync(join(check, 'geo'), { recursive: true });
 function copyChanged(from, to) {
   const next = readFileSync(from);
   if (existsSync(to) && readFileSync(to).equals(next)) return;
@@ -24,7 +25,7 @@ for (const file of ['AreaWorkspace.tsx', 'AutomaticRooms.tsx', 'UnitRoomList.tsx
   'ManualRoomAssignment.tsx', 'manual-room-assignment.ts', 'manual-room-assignment.test.ts',
   'area-deletion.ts', 'area-deletion.test.ts', 'project-area-storage.ts', 'project-area-storage.test.ts', 'area.css',
   'ModelQuestionPanel.tsx', 'ModelQuestionSettings.tsx', 'model-qa-evidence.ts', 'model-qa-evidence.test.ts',
-  'model-qa-types.ts', 'model-qa.css', 'AreaPalPlan.tsx', 'pal-client.ts', 'pal-intent.ts',
+  'model-qa-types.ts', 'model-qa.css', 'AreaPalPlan.tsx', 'pal-client.ts', 'pal-intent.ts', 'editor-commands.ts',
   'DevelopmentFeedback.tsx', 'development-request.mts'])
   copyChanged(join(root, 'web', 'area', file), join(area, file));
 for (const file of ['autoRooms.ts', 'autoRooms.test.ts', 'planDoorAssignment.ts', 'planDoorAssignment.test.ts',
@@ -38,10 +39,17 @@ for (const file of ['pruneRoomOutlines.ts', 'pruneRoomOutlines.test.ts'])
 for (const file of ['index.ts', 'factor.ts', 'project-input.ts', 'door-assignment.ts'])
   copyChanged(join(root, 'cli', 'src', 'area', file), join(area, 'core', file));
 for (const file of ['ModelCheckPanel.tsx', 'ModelCheckLibrary.tsx', 'RoomClearHeightFields.tsx', 'check-import.ts', 'check-import.test.ts', 'check-model.ts', 'check-xlsx.ts',
-  'pal-plan.ts', 'tool-evidence.ts', 'export-feedback.ts', 'storey-height.ts', 'storey-height.test.ts', 'model-check.css'])
+  'pal-plan.ts', 'pal-offline.test.ts', 'pal-offline-fixture.ts', 'tool-evidence.ts', 'door-width.ts', 'space-overlap.ts', 'export-feedback.ts',
+  'storey-height.ts', 'storey-height.test.ts', 'model-check.css'])
   copyChanged(join(root, 'web', 'check', file), join(check, file));
 for (const file of ['index.ts', 'rule-set.ts', 'clear-height.ts', 'decimal.ts', 'tool-recipes.ts'])
   copyChanged(join(root, 'cli', 'src', 'engineering', file), join(check, 'core', file));
+for (const file of ['geojson-to-jsts.ts', 'jsts-exports.ts'])
+  copyChanged(join(root, 'cli', 'src', 'geo', file), join(check, 'geo', file));
+const overlap = readFileSync(join(root, 'cli', 'src', 'engineering', 'overlap.ts'), 'utf8')
+  .replace("'../area/index.js'", "'../../area/core/index.js'");
+const overlapPath = join(check, 'core', 'overlap.ts');
+if (!existsSync(overlapPath) || readFileSync(overlapPath, 'utf8') !== overlap) writeFileSync(overlapPath, overlap);
 
 const demo = join(root, 'sample_data', 'area-example');
 const roomGeometry = JSON.parse(readFileSync(join(demo, 'model', 'lv-1', 'space.geojson'), 'utf8'));
@@ -185,8 +193,42 @@ if (hdrStat.isFile() && hdrStat.size < 128 &&
     readFileSync(hdr, 'utf8').trim() === '../../editor/public/env.hdr') {
   copyFileSync(join(editor, 'editor', 'public', 'env.hdr'), hdr);
 }
+edit('editor/src/components/Canvas.tsx', [
+  [`    window.addEventListener('bimdown:zoom-fit', onFit);
+    return () => window.removeEventListener('bimdown:zoom-fit', onFit);
+  }, [applyZoomToFit]);`, `    const onZoomStep = (event: Event) => {
+      const direction = (event as CustomEvent<unknown>).detail;
+      const el = containerRef.current;
+      if (!el || event.defaultPrevented || (direction !== 'in' && direction !== 'out')) return;
+      const scale = transformRef.current.scale;
+      applyZoomBy(direction === 'in' ? 1.2 : 1 / 1.2, el.clientWidth / 2, el.clientHeight / 2);
+      if (transformRef.current.scale !== scale) event.preventDefault();
+    };
+    window.addEventListener('bimdown:zoom-fit', onFit);
+    window.addEventListener('bimdown:zoom-step', onZoomStep);
+    return () => {
+      window.removeEventListener('bimdown:zoom-fit', onFit);
+      window.removeEventListener('bimdown:zoom-step', onZoomStep);
+    };
+  }, [applyZoomToFit, applyZoomBy, transformRef]);`],
+]);
 edit('editor/src/three/SceneContent.tsx', [
   ['files="/env.hdr"', 'files="/env.hdr?bimdown-hdr=1"'],
+  [`    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', handleWheel);`, `    const onZoomStep = (event: Event) => {
+      const direction = (event as CustomEvent<unknown>).detail;
+      if (!controls.enabled || !controls.enableZoom || event.defaultPrevented || (direction !== 'in' && direction !== 'out')) return;
+      const distance = controls.getDistance();
+      if (direction === 'in') controls.dollyIn(1 / 1.2);
+      else controls.dollyOut(1 / 1.2);
+      if (Math.abs(controls.getDistance() - distance) > 1e-8) event.preventDefault();
+    };
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    window.addEventListener('bimdown:zoom-step', onZoomStep);
+    return () => {
+      canvas.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('bimdown:zoom-step', onZoomStep);
+    };`],
   [` * far enough back that every corner is in view. Runs once per opened project
  * (an empty project is framed as soon as it gets content, e.g. the AI's first
  * build) and on the toolbar's zoom-to-fit (`, ` * far enough back that every corner is in view. Refits when the visible floors

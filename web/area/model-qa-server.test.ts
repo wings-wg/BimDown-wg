@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createModelQaHandler } from './model-qa-server.ts';
 import { MODEL_QA_SESSION_HEADER } from './src/area/model-qa-types.ts';
 import { createPalLibrary } from './pal-library-server.ts';
+import { parsePalIntent } from './src/area/pal-intent.ts';
+import { editorCommands, localEditorIntent, matchEditorLevel } from './src/area/editor-commands.ts';
 
 const configured = {
   BIMDOWN_QA_MODEL: 'test-bim-model',
@@ -30,6 +32,117 @@ async function invoke(handler: ReturnType<typeof createModelQaHandler>, method: 
 }
 
 describe('model question gateway', () => {
+  it('recognizes explicit view and room commands locally but leaves how-to questions and scope changes alone', () => {
+    expect(localEditorIntent('请帮我切换到 ３Ｄ 视图！')).toEqual({ action: 'editor.set-view', mode: '3d' });
+    expect(localEditorIntent('把这个模型的显示方式改为三维视图')).toEqual({ action: 'editor.set-view', mode: '3d' });
+    expect(localEditorIntent('返回平面图')).toEqual({ action: 'editor.set-view', mode: '2d' });
+    expect(localEditorIntent('在所有楼层自动创建房间')).toEqual({ action: 'editor.preview-rooms', scope: 'project' });
+    expect(localEditorIntent('生成当前楼层的房间')).toEqual({ action: 'editor.preview-rooms', scope: 'level' });
+    expect(localEditorIntent('怎样切换到3D视图？')).toBeUndefined();
+    expect(localEditorIntent('在所有楼层自动创建房间，但是跳过二层')).toBeUndefined();
+    expect(localEditorIntent('自动创建房间')).toBeUndefined();
+    expect(parsePalIntent({ action: 'editor.preview-rooms', scope: 'project', confirmed: true }, 'question')).toBeUndefined();
+    expect(parsePalIntent({ action: 'editor.set-view', mode: '3d' }, 'area')).toBeUndefined();
+  });
+
+  it('recognizes a requested level plan as one operation and validates both the action and the level', () => {
+    const plan = { action: 'editor.show-level-plan', target: 'f1' };
+    expect(localEditorIntent('显示F1的2D视图')).toEqual(plan);
+    expect(localEditorIntent('请打开楼层 F1 的二维视图')).toEqual(plan);
+    expect(localEditorIntent('显示二层平面图')).toEqual({ ...plan, target: '二层' });
+    expect(localEditorIntent('显示模型的2D视图')).toEqual({ action: 'editor.set-view', mode: '2d' });
+    expect(localEditorIntent('如何显示F1的2D视图？')).toBeUndefined();
+    expect(parsePalIntent({ ...plan, target: '' }, 'question')).toBeUndefined();
+  });
+
+  it('accepts semantic intents for phrasing the offline catalog does not recognize', async () => {
+    const scenarios = [
+      ['能不能把 F1 给我平面铺开看一下？', { action: 'editor.show-level-plan', target: 'F1' }],
+      ['我想从立体角度看看模型', { action: 'editor.set-view', mode: '3d' }],
+      ['模型离我有点远，拉近一些', { action: 'editor.zoom-view', direction: 'in' }],
+      ['把这个画面往远拉一点', { action: 'editor.zoom-view', direction: 'out' }],
+      ['从底到顶每一层都识别一下房间', { action: 'editor.preview-rooms', scope: 'project' }],
+      ['能把左下角的小地图收起来么？', { action: 'editor.display', option: 'minimap-off' }],
+      ['把已确认的条款过一遍看看结果', { action: 'editor.run-check' }],
+      ['F1 有多少房间？', { action: 'model.query', scope: 'question' }],
+      ['怎样切换到3D视图？', { action: 'model.query', scope: 'question' }],
+      ['所有楼层都找出房间，但跳过二层', { action: 'blocked', gap: 'clarification', reason: '请确认需要预览的楼层范围。' }],
+    ] as const;
+    const provider = vi.fn<typeof fetch>();
+    for (const [, plan] of scenarios)
+      provider.mockResolvedValueOnce(Response.json({ choices: [{ message: { content: JSON.stringify(plan) } }] }));
+    const handler = createModelQaHandler(configured, provider);
+    for (const [text, plan] of scenarios) {
+      expect(localEditorIntent(text), text).toBeUndefined();
+      expect(await invoke(handler, 'POST', { channel: 'question', text }, {}, '/pal/intent'))
+        .toEqual({ code: 200, data: { plan } });
+    }
+    const messages = JSON.parse(String(provider.mock.calls[0][1]?.body)).messages;
+    expect(messages[0].content).toContain('不要求使用固定命令');
+    expect(JSON.parse(messages[1].content).text).toBe(scenarios[0][0]);
+  });
+
+  it('lets the model interpret even registered phrases and rejects unsupported plan parameters', async () => {
+    let proposal: object = { action: 'editor.preview-rooms', scope: 'project' };
+    const provider = vi.fn<typeof fetch>().mockImplementation(async () =>
+      Response.json({ choices: [{ message: { content: JSON.stringify(proposal) } }] }));
+    const handler = createModelQaHandler(configured, provider);
+    const submit = (text: string) => invoke(handler, 'POST', { channel: 'question', text }, {}, '/pal/intent');
+    expect(await submit('在所有楼层自动创建房间')).toEqual({ code: 200, data: { plan: proposal } });
+    proposal = { action: 'editor.preview-rooms', scope: 'project', confirmed: true };
+    expect((await submit('在所有楼层自动创建房间')).code).toBe(502);
+    proposal = { action: 'editor.replace-rooms', scope: 'project' };
+    expect((await submit('把所有楼层的房间替换掉')).code).toBe(502);
+  });
+
+  it('asks for the floor when the model invents a reference or reads part of one', async () => {
+    let proposal: object = { action: 'editor.show-level-plan', target: 'F1' };
+    const provider = vi.fn<typeof fetch>().mockImplementation(async () =>
+      Response.json({ choices: [{ message: { content: JSON.stringify(proposal) } }] }));
+    const handler = createModelQaHandler(configured, provider);
+    const submit = (text: string) => invoke(handler, 'POST', { channel: 'question', text }, {}, '/pal/intent');
+    const clarification = { code: 200, data: { plan: { action: 'blocked', gap: 'clarification' } } };
+    expect(await submit('切换到F2')).toMatchObject(clarification);
+    expect(await submit('显示F10的2D视图')).toMatchObject(clarification);
+    expect(await submit('Show F1 as a floor plan')).toEqual({ code: 200, data: { plan: proposal } });
+    proposal = { action: 'editor.go-level', target: '二层' };
+    expect(await submit('带我去十二层')).toMatchObject(clarification);
+    expect(await submit('带我去地下二层')).toMatchObject(clarification);
+  });
+
+  it('round-trips the shared command catalog and leaves model questions on the evidence route', () => {
+    for (const [action, definition] of Object.entries(editorCommands)) {
+      for (const example of definition.examples) {
+        const plan = localEditorIntent(example);
+        expect(plan, example).toMatchObject({ action });
+        expect(parsePalIntent(plan, 'question')).toEqual(plan);
+        expect(parsePalIntent(plan, 'area')).toBeUndefined();
+      }
+    }
+    for (const question of ['F2 有多少房间？', '概况包括哪些楼层', '如何运行模型核查', '切换到哪一层', '显示所有楼层的面积'])
+      expect(localEditorIntent(question), question).toBeUndefined();
+    expect(parsePalIntent({ action: 'editor.go-level', target: 'F2', command: 'delete' }, 'question')).toBeUndefined();
+    expect(parsePalIntent({ action: 'editor.zoom-view', direction: 'out', factor: 20 }, 'question')).toBeUndefined();
+  });
+
+  it('resolves levels using labels, scoped IDs and elevation without picking between duplicate names', () => {
+    const levels = [
+      { id: 'lv-2', number: '2', name: 'F2', elevation: 3 },
+      { id: 'lv-1', number: '1', name: 'F1', elevation: 0 },
+      { id: 'lv-3', number: '3', name: '设备层', elevation: 6 },
+    ];
+    expect(matchEditorLevel(levels, 'lv-1', '二层').level?.id).toBe('lv-2');
+    expect(matchEditorLevel(levels, 'lv-1', '上层').level?.id).toBe('lv-2');
+    expect(matchEditorLevel(levels, 'lv-1', '上一层').level?.id).toBe('lv-2');
+    expect(matchEditorLevel(levels, 'lv-1', '下层').level).toBeUndefined();
+    expect(matchEditorLevel(levels, 'lv-1', 'LV-3').level?.id).toBe('lv-3');
+    expect(matchEditorLevel(levels, 'lv-2', 'F1').level?.id).toBe('lv-1');
+    expect(matchEditorLevel(levels, 'lv-2', 'F9').level).toBeUndefined();
+    const duplicate = [...levels, { ...levels[2], id: 'lv-4' }];
+    expect(matchEditorLevel(duplicate, 'lv-1', '设备层')).toEqual({ ambiguous: true });
+    expect(matchEditorLevel(duplicate, 'lv-1', '顶层')).toEqual({ ambiguous: true });
+  });
+
   it('compiles area requests without forwarding project data and rejects actions from another entrance', async () => {
     const complete = (plan: object) => Response.json({ choices: [{ message: { content: JSON.stringify(plan) } }] });
     const provider = vi.fn<typeof fetch>()

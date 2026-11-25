@@ -1,5 +1,5 @@
 import { polygonArea } from '../area/index.js';
-import { geoJsonToJsts, type JstsGeometry } from '../geo/index.js';
+import { geoJsonToJsts, type JstsGeometry } from '../geo/geojson-to-jsts.js';
 import { validateRule, type EngineeringDatum, type EngineeringRule } from './index.js';
 
 interface SpaceFootprint {

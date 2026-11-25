@@ -16,6 +16,7 @@ import { ModelCheckPanel } from '../check/ModelCheckPanel.tsx';
 import type { ModelQaConnection } from './model-qa-types.js';
 import { AreaPalPlan } from './AreaPalPlan.tsx';
 import { DevelopmentFeedback } from './DevelopmentFeedback.tsx';
+import type { WorkspaceCommandRequest, WorkspacePanel } from './editor-commands.js';
 import './area.css';
 
 type Report = ReturnType<typeof calculateProjectAreasFromText> & { pendingCommonRooms: RoomReference[] };
@@ -30,20 +31,30 @@ export const AreaConfigInArchive = createContext(false);
 type SaveStatus = { text: string; phase: 'saving' | 'saved' | 'loaded' | 'empty' | 'error'; error?: string };
 
 export function AreaWorkspace() {
-  const [panel, setPanel] = useState<'area' | 'check' | 'feedback'>();
+  const [panel, setPanel] = useState<WorkspacePanel>();
   const [checkMounted, setCheckMounted] = useState(false);
   const [configText, setConfigText] = useState(json(blank));
   const [report, setReport] = useState<Report>();
   const [modelConnection, setModelConnection] = useState<ModelQaConnection>();
   const [libraryRevision, setLibraryRevision] = useState(0);
   const [textDraft, setTextDraft] = useState('');
+  const [command, setCommand] = useState<WorkspaceCommandRequest>();
   const ds = useDataSource();
-  useEffect(() => setTextDraft(''), [ds]);
+  useEffect(() => { setTextDraft(''); setCommand(undefined); }, [ds]);
+
+  function openPanel(target: WorkspacePanel) {
+    if (target === 'check') setCheckMounted(true);
+    setPanel(target);
+  }
+
+  function runWorkspaceCommand(request: WorkspaceCommandRequest) {
+    setCommand(request);
+    openPanel(request.plan.action === 'editor.run-check' ? 'check' : 'area');
+  }
 
   function openCheck(text?: string) {
     if (text !== undefined) setTextDraft(text);
-    setCheckMounted(true);
-    setPanel('check');
+    openPanel('check');
   }
   return (
     <div className="area-page">
@@ -61,18 +72,20 @@ export function AreaWorkspace() {
             aria-controls="development-feedback" onClick={() => setPanel(panel === 'feedback' ? undefined : 'feedback')}>功能建议</button>
         </div>
         <AreaPanel open={panel === 'area'} configText={configText} setConfigText={setConfigText} report={report} setReport={setReport}
-          connection={modelConnection} openCheck={openCheck} />
+          connection={modelConnection} openCheck={openCheck} command={command?.plan.action === 'editor.area-workflow' ? command : undefined} />
         {checkMounted && <ModelCheckPanel open={panel === 'check'} close={() => setPanel(undefined)} connection={modelConnection}
-          libraryRevision={libraryRevision} textDraft={textDraft} setTextDraft={setTextDraft} />}
+          libraryRevision={libraryRevision} textDraft={textDraft} setTextDraft={setTextDraft}
+          command={command?.plan.action === 'editor.run-check' ? command : undefined} />}
         <DevelopmentFeedback open={panel === 'feedback'} close={() => setPanel(undefined)} />
       </div>
       <ModelQuestionPanel areaDraft={configText} report={report} onConnectionChange={setModelConnection} openCheck={openCheck}
+        openPanel={openPanel} runWorkspaceCommand={runWorkspaceCommand}
         toolDrafted={() => setLibraryRevision(value => value + 1)} />
     </div>
   );
 }
 
-function AreaPanel({ open, configText, setConfigText, report, setReport, connection, openCheck }: {
+function AreaPanel({ open, configText, setConfigText, report, setReport, connection, openCheck, command }: {
   open: boolean;
   configText: string;
   setConfigText: (value: string) => void;
@@ -80,6 +93,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
   setReport: (value: Report | undefined) => void;
   connection?: ModelQaConnection;
   openCheck: (text: string) => void;
+  command?: WorkspaceCommandRequest;
 }) {
   const ds = useDataSource();
   const store = getProjectAreaStore(ds);
@@ -106,6 +120,11 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
   const assignedUnits = useRef<HTMLElement>(null);
   const ruleSourceField = useRef<HTMLInputElement>(null);
   const outlineDetails = useRef<HTMLDetailsElement>(null);
+  const doorDetails = useRef<HTMLDetailsElement>(null);
+  const manualSection = useRef<HTMLDivElement>(null);
+  const allocationSection = useRef<HTMLDivElement>(null);
+  const areaReview = useRef<HTMLInputElement>(null);
+  const handledCommand = useRef<WorkspaceCommandRequest>(undefined);
   const liveSource = useRef({ ds, project, currentDocument, currentLevel });
   liveSource.current = { ds, project, currentDocument, currentLevel };
 
@@ -395,6 +414,40 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
     : saveStatus.phase === 'loaded' ? '已读取项目配置。' : '';
   const outlineUnavailable = !currentDocument || currentDocument.levelId !== currentLevel || state.readonly || !!state.groupEdit;
 
+  useEffect(() => {
+    if (!open || loadedStore !== store || command?.plan.action !== 'editor.area-workflow' || handledCommand.current === command)
+      return;
+    handledCommand.current = command;
+    const { task } = command.plan;
+    if (task === 'calculate') {
+      if (busy) setNotice('正在处理上一项面积操作，请完成后再运行测算。');
+      else if (!draft?.ruleSource.trim() || !reviewed) {
+        setNotice('请填写测算依据并审核边界、归属和分摊，再运行测算。');
+        if (draft?.ruleSource.trim()) areaReview.current?.focus(); else ruleSourceField.current?.focus();
+      } else void run(calculate);
+      return;
+    }
+    if ((task === 'outlines-level' || task === 'doors' || task === 'rooms') && command.level !== currentLevel) {
+      setNotice('当前楼层已变化，请在目标楼层重新发送指令。');
+      return;
+    }
+    if (task === 'outlines-level' || task === 'outlines-project') {
+      setOutlineScope(task === 'outlines-project' ? 'project' : 'level');
+      setOutlineResult(undefined);
+      setOutlineError('');
+      if (outlineDetails.current) outlineDetails.current.open = true;
+      outlineDetails.current?.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    const details = task === 'doors' ? doorDetails.current : task === 'rooms' ? manualSection.current?.querySelector('details') : undefined;
+    const section = task === 'allocation' ? allocationSection.current : details;
+    if (section) {
+      if (details) details.open = true;
+      section.scrollIntoView({ block: 'nearest' });
+      if (task === 'doors' && selectedDoor && !busy && draft) void run(previewEntrance, true);
+    } else setNotice('请先检查项目测算配置，再编辑房间归属或分摊关系。');
+  }, [open, loadedStore, store, command, currentLevel, reviewed, draft, busy, calculate, run, previewEntrance, selectedDoor]);
+
   if (loadedStore !== store) return (
     <aside id="area-panel" className="area-panel" aria-label="面积测算与分摊" hidden={!open}>
       <p className="area-status" role="status">正在读取项目配置…</p>
@@ -430,6 +483,8 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
       <details ref={outlineDetails}>
         <summary>测算轮廓</summary>
         <p>沿墙中心线提取已有房间的边界，补齐对应楼层的测算轮廓文件。</p>
+        {command?.plan.action === 'editor.area-workflow' && command.plan.task.startsWith('outlines-') && !outlineResult &&
+          <p role="status">请核对楼层范围后点击「生成测算轮廓」。</p>}
         <label>轮廓生成范围<select value={outlineScope} disabled={busy} onChange={event => {
           setOutlineScope(event.target.value === 'project' ? 'project' : 'level');
           setOutlineResult(undefined);
@@ -461,7 +516,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
           </ul>}
         </div>}
       </details>
-      <details>
+      <details ref={doorDetails}>
         <summary>按入户门归户</summary>
         <p>在当前楼层选中入户门，预览与户内一侧相连的房间。</p>
         {currentSelection && <p>当前选中 {currentSelection.level} / {currentSelection.elementId}</p>}
@@ -510,15 +565,15 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
             className={doorNotice.error ? 'area-status area-error' : 'area-status'}>{doorNotice.text}</p>}
         </div>
       </details>
-      {draft && <ManualRoomAssignment key={currentLevel} draft={draft} levelName={levelNames.get(currentLevel) ?? currentLevel}
+      {draft && <div ref={manualSection}><ManualRoomAssignment key={currentLevel} draft={draft} levelName={levelNames.get(currentLevel) ?? currentLevel}
         rooms={modelRooms.filter(room => room.level === currentLevel)} planIds={selectedIds} busy={busy}
         canDelete={!state.readonly && !state.groupEdit && currentDocument?.levelId === currentLevel} remove={deleteRooms}
-        save={(rooms, unit, confirmMove) => update(json(assignSelectedRooms(parse(), rooms, unit, confirmMove)))} />}
+        save={(rooms, unit, confirmMove) => update(json(assignSelectedRooms(parse(), rooms, unit, confirmMove)))} /></div>}
       <UnitRoomList draft={draft} sectionRef={assignedUnits} busy={busy}
         remove={unitId => update(json(removeAreaUnit(parse(), unitId)))} />
-      {draft && <CommonRoomAllocations draft={draft} rooms={commonRooms} level={currentLevel}
+      {draft && <div ref={allocationSection}><CommonRoomAllocations draft={draft} rooms={commonRooms} level={currentLevel}
         levelNames={levelNames} busy={busy} locate={locate}
-        save={(rooms, rule) => update(json(saveSelectedRoomAllocations(parse(), rooms, rule)))} />}
+        save={(rooms, rule) => update(json(saveSelectedRoomAllocations(parse(), rooms, rule)))} /></div>}
       {legacyPools.length > 0 && <details>
         <summary>已有共有池分摊</summary>
         <form onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); void run(() => addGroup(data)); }}>
@@ -542,7 +597,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
         <button type="button" disabled={!draft || busy} onClick={() => void run(() => update(configText))}>保存配置</button>
         <button type="button" disabled={!draft} onClick={() => { if (draft) download({ ...draft, confirmed: reviewed }, AREA_CONFIG_PATH); }}>下载配置</button>
       </details>
-      <label className="area-review"><input type="checkbox" checked={reviewed} onChange={event => {
+      <label className="area-review"><input ref={areaReview} type="checkbox" checked={reviewed} onChange={event => {
         setReviewed(event.target.checked);
         sequence.current += 1;
         setReport(undefined);

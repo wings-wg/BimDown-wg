@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bindPalPlan, importSheetRules, importTextRule, type SheetRow } from './check-import.js';
+import { bindLocalStoreyHeight, bindPalPlan, importSheetRules, importTextRule, type SheetRow } from './check-import.js';
 import { HEIGHT, validatePalResponse } from './pal-plan.js';
 
 function row(number: number, values: string[], formulaColumns: number[] = []): SheetRow {
@@ -17,6 +17,23 @@ const validate = (candidate: unknown, item = source()) =>
   validatePalResponse(JSON.stringify({ rules: [candidate] }), [item.clause!])[0].plan;
 
 describe('Excel to PAL rule import', () => {
+  it('prepares an explicit residential storey rule locally, independent of its spreadsheet ID', () => {
+    const [item] = importSheetRules('synthetic.xlsx', '条款', [
+      row(1, ['编号', '核查对象 / 构件类型', '核查属性(几何或参数字段)', '判定条件(表达式)',
+        '阈值或限值', '适用条件与例外', '备注 / 误报提示']),
+      row(2, ['NEW-H', '每层 Storey', '层高 Height', '层高 低于 3.000m 判FAIL',
+        '新建住宅层高不应低于 3.000m', '全部住宅楼层', '区分结构层高与建筑层高；净高另按 JT-02、JT-03 核查']),
+    ]);
+    expect(bindLocalStoreyHeight(item)).toMatchObject({ compiledLocally: true, rule: {
+      id: 'NEW-H', concept: HEIGHT, threshold: 3, reviewed: false,
+      applicability: '全部住宅楼层 · 新建住宅层高不应低于 3.000m',
+    } });
+    for (const change of [{ attribute: '净高' }, { note: '顶层另判' }, { limit: '新建住宅层高不应低于 3.100m' },
+      { applicability: '屋顶除外' }, { condition: '层高 低于 3.000m 或净高低于 2.6m 判FAIL' }]) {
+      expect(bindLocalStoreyHeight({ ...item, clause: { ...item.clause!, ...change } }).rule).toBeUndefined();
+    }
+  });
+
   it('compiles typed and uploaded requirements via the same binder and preserves the typed wording', async () => {
     const item = await importTextRule(wording);
     expect(item.source.text).toBe(wording);

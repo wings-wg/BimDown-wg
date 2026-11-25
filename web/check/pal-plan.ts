@@ -1,3 +1,5 @@
+import { DOOR_WIDTH, doorUses, type DoorThresholds, type DoorUse } from './door-width.js';
+
 export const HEIGHT = 'storey.architectural-height';
 export const ROOM_NET_AREA = 'space.model-recorded-net-area';
 export const PAL_BATCH_SIZE = 8;
@@ -11,11 +13,15 @@ export const scalarBindings = {
 
 export type ToolPlan = { kind: 'registered-tool' | 'tool-draft'; toolId: string; recipe: ToolRecipe;
   operator: '>=' | '<='; threshold: number; quote: string };
+export type DoorWidthPlan = { kind: 'door-clear-width-by-use'; toolId: string; recipe: ToolRecipe;
+  thresholds: DoorThresholds; quotes: Record<DoorUse, string> };
 export type PalPlan =
   | { kind: 'scalar'; concept: keyof typeof scalarBindings; operator: '>=' | '<='; scope: string; threshold: number; quote: string }
   | { kind: 'clear-height-with-local-exception'; scope: 'ordinary-residential-rooms'; nominalHeight: number;
       minimumHeight: number; maxLowAreaFraction: { numerator: number; denominator: number }; quotes: [string, string, string] }
   | ToolPlan
+  | DoorWidthPlan
+  | { kind: 'space-projection-exclusion' }
   | { kind: 'blocked'; reason: string; gap?: 'missing-tool' | 'clarification' | 'external-evidence' };
 export interface PalResult { id: string; plan: PalPlan }
 
@@ -30,6 +36,8 @@ export const PAL_PROMPT = [
   '示例数值仅示意格式。所有数值参数必须是 condition 或 limit 中完整的原文数值加单位片段；比例用原文分数或百分数。不要换算、重写或补充数字。',
   '若无工具，且能用 profiles 中一种口径及一个已注册原语完整表达，可生成 {"id":"...","kind":"tool-draft","recipe":{"concept":"profiles 的精确键","operation":"read","inputs":["精确字段"]},"operator":">=","threshold":"100 mm"}。',
   'read 读取该 profile 的 measured；difference 只用于明确有 upper 与 lower 的 profile，且 inputs 须依次为 upper、lower。适用对象由审核人逐对象确认，不能丢弃分档、其他条件或例外。限值必须是原文引用，工具本身不含限值。',
+  '门扇开启后的有效通行净宽若按户门、居室门、厨房门和卫生间门明确给出四档下限，返回 {"id":"...","kind":"door-clear-width-by-use","thresholds":{"entrance":"原文数字及单位","habitable":"原文数字及单位","kitchen":"原文数字及单位","bathroom":"原文数字及单位"}}。不能补猜档位或忽略其他限制。',
+  '若明确禁止上层卫生间与下层卧室、起居室、厨房及餐厅投影有正面积相交，可返回 {"id":"...","kind":"space-projection-exclusion"}。适用对象与下层清单须确认。',
   '不能用已有原语表达时返回 blocked，可加 gap: missing-tool、clarification 或 external-evidence。楼高不是室内净高，门洞宽度不是通行净宽，楼板名义 thickness 不是已确认结构层厚。',
 ].join('\n');
 
@@ -75,6 +83,66 @@ function strictlyKeys(candidate: Record<string, unknown>, keys: string[]) {
   return Object.keys(candidate).length === keys.length && keys.every(key => Object.hasOwn(candidate, key));
 }
 
+/** The explicit table format for a single residential storey lower limit is deterministic. */
+export function localStoreyHeightPlan(clause: PalClause): Extract<PalPlan, { kind: 'scalar' }> | undefined {
+  const target = normalized(clause.target);
+  const attribute = normalized(clause.attribute);
+  if (!/^(?:每层storey|每层|楼层|住宅楼层)$/.test(target) ||
+      !/^(?:建筑)?层高(?:height)?$/.test(attribute) ||
+      !/^(?:全部|各)?(?:新建)?住宅楼层$/.test(normalized(clause.applicability))) return undefined;
+  const note = normalized(clause.note);
+  if (note && !/^区分结构层高与建筑层高(?:;净高另按[jt\d、,-]+核查)?[。.]?$/.test(note)) return undefined;
+  const match = /^(?:建筑)?层高\s*低于\s*(\d+(?:\.\d+)?\s*(?:mm|m|毫米|米))\s*判fail[。.]?$/i
+    .exec(clause.condition.normalize('NFKC').trim());
+  const limit = /^(?:新建)?住宅(?:建筑)?层高(?:不应低于|不低于|不得低于|不得小于|不小于|至少)(\d+(?:\.\d+)?(?:mm|m|毫米|米))[。.]?$/
+    .exec(normalized(clause.limit));
+  if (!match || !limit || readQuantity(normalized(match[1]), 'm') !== readQuantity(limit[1], 'm')) return undefined;
+  const plan = validateProposal({ id: clause.id, kind: 'scalar', concept: HEIGHT, scope: scalarBindings[HEIGHT].scope,
+    operator: '>=', threshold: match[1] }, clause, []);
+  return plan.kind === 'scalar' ? plan : undefined;
+}
+
+function doorWidthPlan(candidate: Record<string, unknown>, clause: PalClause): DoorWidthPlan | undefined {
+  const raw = candidate.thresholds;
+  if (!strictlyKeys(candidate, ['id', 'kind', 'thresholds']) || !raw || typeof raw !== 'object' ||
+      !strictlyKeys(raw as Record<string, unknown>, Object.keys(doorUses))) return undefined;
+  if (!/通行净宽|有效净宽/.test([clause.attribute, clause.condition, clause.limit, clause.note].join(' '))) return undefined;
+  if (/除外|除非|可放宽|另行|更严|不适用/.test([clause.applicability, clause.note].join(' '))) return undefined;
+  const thresholds = {} as DoorThresholds;
+  const quotes = {} as Record<DoorUse, string>;
+  // Both columns must describe only the supported four comparisons when populated.
+  // Validate the amount in its own branch rather than matching any amount in the row.
+  const fields = [clause.limit, clause.condition].map(normalized).filter(Boolean);
+  const keys = Object.keys(doorUses) as DoorUse[];
+  const labels = new Map<string, DoorUse>(keys.map(use => [doorUses[use], use]));
+  for (const use of keys.filter(use => use !== 'entrance')) labels.set(doorUses[use].slice(0, -1), use);
+  const comparator = '(?:不(?:少|小)于|不得小于|至少|低于)';
+  const value = '([0-9]+(?:\\.[0-9]+)?(?:毫米|mm|米|m))';
+  if (!fields.length) return undefined;
+  let named: Partial<DoorThresholds>;
+  for (const field of fields) {
+    named = {};
+    const fragments = field.replace(/[。.]$/, '').split(/[、,;]/);
+    const failureColumn = fragments.at(-1)?.endsWith('判fail') === true;
+    for (const fragment of fragments) {
+      const match = new RegExp(`^(${[...labels.keys()].join('|')})(?:通行净宽|有效通行净宽|净宽)?(${comparator})${value}(判fail)?$`).exec(fragment);
+      const use = match && labels.get(match[1]);
+      if (!match || !use || named[use] !== undefined || (match[2] === '低于') !== failureColumn) return undefined;
+      const amount = readQuantity(match[3], 'm');
+      const quote = (raw as Record<string, unknown>)[use];
+      if (typeof quote !== 'string' || !amount || readQuantity(normalized(quote), 'm') !== amount ||
+          (thresholds[use] !== undefined && thresholds[use] !== amount)) return undefined;
+      named[use] = amount;
+      thresholds[use] = amount;
+      if (normalized(quote) === match[3]) quotes[use] = quote;
+    }
+    if (Object.keys(named).length !== keys.length) return undefined;
+  }
+  if (Object.keys(quotes).length !== keys.length) return undefined;
+  const recipe: ToolRecipe = { concept: DOOR_WIDTH, operation: 'read', inputs: [DOOR_WIDTH] };
+  return { kind: 'door-clear-width-by-use', toolId: toolId(recipe), recipe, thresholds, quotes };
+}
+
 /** Models propose tool calls and quotes. The server derives values from the original row. */
 function validateProposal(candidate: Record<string, unknown>, clause: PalClause, tools: readonly ToolEntry[]): PalPlan {
   const text = [clause.condition, clause.limit].map(value => value.normalize('NFKC'));
@@ -90,6 +158,19 @@ function validateProposal(candidate: Record<string, unknown>, clause: PalClause,
         (gap === 'missing-tool' || gap === 'clarification' || gap === 'external-evidence'))
       return { kind: 'blocked', reason, gap };
   }
+  if (candidate.kind === 'door-clear-width-by-use') return doorWidthPlan(candidate, clause) ??
+    blocked('四类门的限值、比较方向或原文适用条件未能一致绑定。');
+  if (candidate.kind === 'space-projection-exclusion') {
+    const words = [clause.target, clause.condition, clause.limit].join(' ');
+    const match = /^(?:本层|上层)?卫生间(?:的)?投影(落在|与)下层((?:卧室|起居室(?:\(厅\))?|厨房|餐厅)(?:[、,或和](?:卧室|起居室(?:\(厅\))?|厨房|餐厅)){3})(发生叠合|正面积相交|投影相交|重叠|叠合|相交)?判fail[。.]?$/
+      .exec(normalized(clause.condition));
+    if (strictlyKeys(candidate, ['id', 'kind']) && match && (match[1] === '落在' || match[3]) &&
+        ['卧室', '起居室', '厨房', '餐厅'].every(use => match[2].includes(use)) &&
+        !quantities.length && !ratios.length && !/除外|除非|仅当|放宽|可以|未相交|无交集|不相交/.test(
+          [words, clause.applicability, clause.note].join(' ')))
+      return { kind: 'space-projection-exclusion' };
+    return blocked('跨层投影用途、方向或禁叠条件无法完整对应原文。');
+  }
 
   if (candidate.kind === 'registered-tool' || candidate.kind === 'tool-draft') {
     const active = candidate.kind === 'registered-tool' && tools.find(tool => tool.status === 'active' && tool.id === candidate.toolId);
@@ -100,7 +181,7 @@ function validateProposal(candidate: Record<string, unknown>, clause: PalClause,
     if (!strictlyKeys(candidate, validKeys) || !recipe || (candidate.operator !== '>=' && candidate.operator !== '<=') ||
         threshold === undefined || ratios.length || quantities.some(value => readQuantity(value, 'm') !== threshold))
       return blocked('工具方案、单位、限值或原文存在冲突，未生成可执行工具。');
-    const reused = active || tools.find(tool => tool.recipe.concept === recipe.concept && tool.status === 'active');
+    const reused = active || tools.find(tool => tool.id === toolId(recipe) && tool.status === 'active');
     return { kind: reused ? 'registered-tool' : 'tool-draft',
       toolId: reused ? reused.id : toolId(recipe), recipe: reused ? reused.recipe : recipe,
       threshold, operator: candidate.operator, quote: candidate.threshold as string };

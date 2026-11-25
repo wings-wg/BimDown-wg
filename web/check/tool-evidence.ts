@@ -3,6 +3,7 @@ import type { EngineeringDatum } from './core/index.js';
 import type { ScalarEvidenceSet } from './core/rule-set.js';
 import { executeToolRecipe, parseToolRecipe, textPresent, TOOL_PROFILES, toolId, type ToolEntry, type ToolMeasurement, type ToolRecipe } from './core/tool-recipes.js';
 import type { CheckItem } from './check-import.js';
+import { DOOR_WIDTH, doorUses, type DoorUse } from './door-width.js';
 
 export const TOOL_EVIDENCE_PATH = 'engineering_evidence.json';
 type Reader = Pick<DataSource, 'fetchText'>;
@@ -10,17 +11,29 @@ type ObjectRef = EngineeringDatum['object'];
 type Target = ScalarEvidenceSet['targets'][number];
 type Applicable = Target['applicability'][number] & { object: ObjectRef; applicability: string };
 type Fact = ToolMeasurement & { object: ObjectRef; concept: string };
-const objectId = ({ scope, table, id }: ObjectRef) => JSON.stringify([scope, table, id]);
-const validRef = (value: ObjectRef | undefined) => value && [value.scope, value.table, value.id].every(textPresent);
+export const objectId = ({ scope, table, id }: ObjectRef) => JSON.stringify([scope, table, id]);
+const validRef = (value: ObjectRef | undefined) => value && [value.scope, value.table, value.id].every(textPresent) &&
+  !/[/\\:\0]/.test(value.scope) && !['.', '..'].includes(value.scope);
+export type DoorUseEvidence = { object: ObjectRef; use: DoorUse; source: string; confirmed: boolean;
+  openingAngleDeg: number; measurementLine: string };
+type ClearHeightAreas = { object: ObjectRef; belowHeightMetres: number; usableAreaM2: number; lowAreaM2: number;
+  boundaryRef: string; source: string; confirmed: boolean };
 
-function parseEvidence(text: string | null, projectRevision?: string) {
+export function parseEvidence(text: string | null, projectRevision?: string) {
   const facts = new Map<string, Map<string, Fact>>();
   const duplicate = new Set<string>();
   const applicability = new Map<string, Applicable>();
-  if (!text) return { facts, duplicate, applicability };
-  const value = JSON.parse(text) as { version?: number; modelRevision?: string; measurements?: Fact[]; applicability?: Applicable[] };
+  const classifications = new Map<string, DoorUseEvidence>();
+  const clearHeightAreas = new Map<string, ClearHeightAreas>();
+  const empty = { facts, duplicate, applicability, classifications, clearHeightAreas };
+  if (!text) return { ...empty, spaceRelations: undefined };
+  const value = JSON.parse(text) as { version?: number; modelRevision?: string; measurements?: Fact[];
+    applicability?: Applicable[]; doorUses?: DoorUseEvidence[]; clearHeightAreas?: ClearHeightAreas[]; spaceRelations?: unknown };
   if (value?.version !== 1 || !Array.isArray(value.measurements) || !Array.isArray(value.applicability) ||
-      value.measurements.length + value.applicability.length > 100_000)
+      (value.doorUses !== undefined && !Array.isArray(value.doorUses)) ||
+      (value.clearHeightAreas !== undefined && !Array.isArray(value.clearHeightAreas)) ||
+      value.measurements.length + value.applicability.length + (value.doorUses?.length ?? 0) +
+        (value.clearHeightAreas?.length ?? 0) > 100_000)
     throw new Error(`${TOOL_EVIDENCE_PATH} 格式无效或超过限制。`);
   if (!textPresent(projectRevision) || value.modelRevision !== projectRevision)
     throw new Error('证据文件的 modelRevision 必须匹配 project_metadata.json 的 engineering_revision。');
@@ -43,7 +56,27 @@ function parseEvidence(text: string | null, projectRevision?: string) {
       duplicate.add(id);
     } else applicability.set(id, entry);
   }
-  return { facts, duplicate, applicability };
+  for (const entry of value.doorUses ?? []) {
+    if (!entry || !validRef(entry.object) || entry.object.table !== 'door' ||
+        typeof entry.use !== 'string' || !Object.hasOwn(doorUses, entry.use) || !textPresent(entry.source) ||
+        typeof entry.confirmed !== 'boolean' || !Number.isFinite(entry.openingAngleDeg) ||
+        entry.openingAngleDeg <= 0 || entry.openingAngleDeg > 180 || !textPresent(entry.measurementLine))
+      throw new Error('门用途证据缺少有效的用途、来源、开启角或测线。');
+    const key = objectId(entry.object);
+    if (classifications.has(key)) duplicate.add(key);
+    classifications.set(key, entry);
+  }
+  for (const entry of value.clearHeightAreas ?? []) {
+    if (!entry || !validRef(entry.object) || entry.object.table !== 'space' ||
+        ![entry.belowHeightMetres, entry.usableAreaM2, entry.lowAreaM2].every(Number.isFinite) ||
+        entry.belowHeightMetres <= 0 || entry.usableAreaM2 <= 0 || entry.lowAreaM2 < 0 || entry.lowAreaM2 > entry.usableAreaM2 ||
+        !textPresent(entry.boundaryRef) || !textPresent(entry.source) || typeof entry.confirmed !== 'boolean')
+      throw new Error('净高面积记录缺少有效的限值、面积、公共测算边界或确认来源。');
+    const key = JSON.stringify([objectId(entry.object), entry.belowHeightMetres]);
+    if (clearHeightAreas.has(key)) duplicate.add(key);
+    clearHeightAreas.set(key, entry);
+  }
+  return { ...empty, spaceRelations: value.spaceRelations };
 }
 
 export function toolDataContract(recipe: ToolRecipe) {
@@ -85,14 +118,13 @@ export async function readScopedToolMeasurements(ds: Reader, tool: ToolEntry, ob
   });
 }
 
-export async function readToolEvidence(ds: Reader, levels: { id: string; name: string }[], items: CheckItem[], metadata: string | null) {
-  const tables = [...new Set(items.map(item => item.rule!.targetTable))];
-  const [text, sources] = await Promise.all([ds.fetchText(TOOL_EVIDENCE_PATH),
-    Promise.all(levels.flatMap(level => tables.map(async table => ({
+export async function readToolEvidence(ds: Reader, levels: { id: string; name: string }[], items: CheckItem[], metadata: string | null, text: string | null) {
+  const tables = [...new Set(items.map(item => item.rule?.targetTable ?? 'door'))];
+  const sources = await Promise.all(levels.flatMap(level => tables.map(async table => ({
       level, table, text: await ds.fetchText(`${level.id}/${table}.csv`),
-    }))))]);
+    }))));
   let parsed: ReturnType<typeof parseEvidence>;
-  let evidenceError: string | undefined;
+  let evidenceError = text ? undefined : `当前 BIMDown 缺少 ${TOOL_EVIDENCE_PATH}。请补充已确认的适用性和量测来源。`;
   try {
     const projectRevision = metadata ? JSON.parse(metadata)?.engineering_revision : undefined;
     parsed = parseEvidence(text, projectRevision);
@@ -119,16 +151,18 @@ export async function readToolEvidence(ds: Reader, levels: { id: string; name: s
   return {
     snapshot: JSON.stringify([text, sources]),
     cases: items.map(item => {
-      const rule = item.rule!;
+      const rule = item.rule ?? item.doorWidthRule!;
+      const targetTable = item.rule?.targetTable ?? 'door';
+      const concept = item.rule?.concept ?? DOOR_WIDTH;
       const tool = item.libraryTool!;
-      const recipe = tool.recipe;
-      if (tool.status !== 'active' || tool.id !== toolId(recipe) || recipe.concept !== rule.concept ||
-          TOOL_PROFILES[recipe.concept].table !== rule.targetTable || rule.unit !== 'm')
+      const recipe = parseToolRecipe(tool.recipe);
+      if (!recipe || tool.status !== 'active' || tool.id !== toolId(recipe) || recipe.concept !== concept ||
+          TOOL_PROFILES[recipe.concept].table !== targetTable || (item.rule && item.rule.unit !== 'm'))
         throw new Error('规则和启用的工具版本不匹配。');
-      const details = new Map<string, { name: string; detail?: string; inputs?: ToolMeasurement[] }>();
+      const details = new Map<string, { name: string; detail?: string; inputs?: ToolMeasurement[]; doorUse?: DoorUseEvidence }>();
       const targets: Target[] = [];
       for (const [key, { object, name }] of objects) {
-        if (object.table !== rule.targetTable) continue;
+        if (object.table !== targetTable) continue;
         const scopeKey = JSON.stringify([key, rule.id, rule.version, rule.applicability]);
         const repeated = ambiguous.has(key) || parsed.duplicate.has(scopeKey) ||
           recipe.inputs.some(field => parsed.duplicate.has(JSON.stringify([key, field])));
@@ -136,9 +170,20 @@ export async function readToolEvidence(ds: Reader, levels: { id: string; name: s
         const record: Target = { object, applicability: scope ? [scope] : [], measurements: [] };
         let detail = evidenceError;
         let inputs: ToolMeasurement[] | undefined;
+        let doorUse: DoorUseEvidence | undefined;
         if (repeated) detail = '对象短 ID、适用性或量测记录重复，无法唯一绑定。';
         else if (!scope && !detail) detail = `缺少本规则版本、适用范围及对象的确认记录（${TOOL_EVIDENCE_PATH}）。`;
         else if (scope?.decision === 'applies') {
+          if (item.doorWidthRule) {
+            const classification = parsed.classifications.get(key);
+            if (!classification?.confirmed || parsed.duplicate.has(key)) {
+              detail = '同一扇门缺少已确认的用途、开启角及测线，或用途记录冲突。';
+              details.set(key, { name, detail });
+              targets.push(record);
+              continue;
+            }
+            doorUse = classification;
+          }
           const result = executeToolRecipe(recipe, parsed.facts.get(key) ?? new Map());
           if (result.value === undefined) detail = result.reason;
           else {
@@ -147,10 +192,10 @@ export async function readToolEvidence(ds: Reader, levels: { id: string; name: s
               source: inputs.map(input => input.source).join('；') });
           }
         }
-        details.set(key, { name, detail, inputs });
+        details.set(key, { name, detail, inputs, doorUse });
         targets.push(record);
       }
-      return { rule, tool, targets, getDetail: (object: ObjectRef) => details.get(objectId(object)), evidenceError };
+      return { item, tool, targets, getDetail: (object: ObjectRef) => details.get(objectId(object)), evidenceError };
     }),
   };
 }

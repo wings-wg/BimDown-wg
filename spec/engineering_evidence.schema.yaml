@@ -36,3 +36,42 @@ fields:
       applicability: "exact applicability text of the reviewed rule"
       decision: "applies or does-not-apply"
       source: "reason and source for the explicit decision"
+  - name: doorUses
+    type: array
+    required: false
+    description: At most one confirmed use and measurement setup per scoped door. The width itself is a measurement with concept door.effective-clear-width.
+    items:
+      object: { scope: "level directory", table: "door", id: "door ID" }
+      use: "entrance, habitable, kitchen or bathroom"
+      source: "reviewed door use and measurement setup, including leaf, frame and hardware intrusions"
+      confirmed: "boolean"
+      openingAngleDeg: "finite degrees, greater than 0 and at most 180"
+      measurementLine: "reference to the actual clear-passage measurement line"
+  - name: clearHeightAreas
+    type: array
+    required: false
+    description: One confirmed record per scoped space and belowHeightMetres. Whole and low areas use the same finished usable-floor boundary. Minimum height is a measurement with concept space.finished-minimum-clear-height.
+    items:
+      object: { scope: "level directory", table: "space", id: "room ID" }
+      belowHeightMetres: "constant height in metres, exclusive upper bound for the low area"
+      usableAreaM2: "finite total usable-floor area in square metres"
+      lowAreaM2: "finite part of that area strictly below the height limit, in square metres"
+      boundaryRef: "reference to the single reviewed usable-floor boundary shared by both areas"
+      source: "reviewed analysis or drawing"
+      confirmed: "boolean"
+  - name: spaceRelations
+    type: object
+    required: false
+    description: Confirmed lower-storey inventory, room use and coordinate frame for cross-storey projection checks. Rings are read from each level's space.geojson and matched to space.csv.
+    levelPairs:
+      - upper: "upper level directory"
+        lower: "reviewed lower level directory with a smaller elevation"
+        frame: "common planar coordinate frame"
+        source: "review of the pairing and completeness of the lower room list"
+        lowerInventoryConfirmed: "true"
+    footprints:
+      - object: { scope: "level directory", table: "space", id: "room ID" }
+        use: "bathroom, bedroom, living, kitchen, dining or other"
+        frame: "same planar reference as the selected level pair"
+        source: "room use and geometry confirmation"
+        confirmed: "boolean"

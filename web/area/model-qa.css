@@ -40,6 +40,9 @@
 .model-qa-answer, .model-qa-result dd { white-space: pre-wrap; }
 .model-qa-result details { margin-top: 0.6rem; }
 .model-qa-result summary { cursor: pointer; }
+.model-qa-room-plan .area-review { display: flex; align-items: flex-start; gap: 0.5rem; }
+.model-qa-room-plan .area-room-preview { max-height: min(13vh, 8rem); }
+.model-qa-commands { display: flex; flex-wrap: wrap; gap: 0.35rem; list-style: none; padding: 0; margin-block: 0.55rem; }
 .model-qa-sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: 0.6rem; margin-top: 0.5rem; list-style: none; padding: 0; }
 .model-qa-sources li { border: 1px solid var(--panel-border, #c0cbd0); border-radius: 0.4rem; padding: 0.45rem; min-width: 0; }
 .model-qa-source-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 0.35rem; }

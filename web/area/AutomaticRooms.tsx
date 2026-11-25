@@ -3,33 +3,41 @@ import { automaticRoomName, automaticRoomPatches, previewAutomaticRooms, useEdit
 
 const area = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
 type RoomPreview = ReturnType<typeof previewAutomaticRooms>;
+type Scope = 'level' | 'project';
+type State = ReturnType<typeof useEditorState>;
+type Preview = RoomPreview & { project: State['project']; document: State['document'] };
 
-export function AutomaticRooms() {
+function inspectRooms(state: State, scope: Scope) {
+  try {
+    const preview: Preview = { ...previewAutomaticRooms(state, scope), project: state.project, document: state.document };
+    return { preview, notice: '' };
+  } catch (error) {
+    return { preview: undefined, notice: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export function AutomaticRooms({ request }: { request?: { scope: Scope; level: string } } = {}) {
   const state = useEditorState();
   const dispatch = useEditorDispatch();
-  const [scope, setScope] = useState<'level' | 'project'>('level');
-  const [preview, setPreview] = useState<(RoomPreview & {
-    project: typeof state.project;
-    document: typeof state.document;
-  })>();
+  const [scope, setScope] = useState<Scope>(request?.scope ?? 'level');
+  const [review, setReview] = useState<{ preview?: Preview; notice: string }>(() =>
+    request && (request.scope === 'project' || request.level === state.currentLevel)
+      ? inspectRooms(state, request.scope) : { notice: '' });
+  const { preview, notice } = review;
   const [excluded, setExcluded] = useState<Set<number>>(new Set());
-  const [notice, setNotice] = useState('');
   const stale = preview && (state.project !== preview.project || state.document !== preview.document ||
     state.currentLevel !== preview.document?.levelId);
   const activePreview = stale ? undefined : preview;
-  const ready = !!state.document && state.document.levelId === state.currentLevel && !state.readonly && !state.groupEdit;
-  const levelName = state.project?.levels.find(level => level.id === state.currentLevel)?.name || state.currentLevel;
+  const targetLevel = request?.scope === 'level' ? request.level : state.currentLevel;
+  const levelChanged = targetLevel !== state.currentLevel;
+  const ready = !levelChanged && !!state.document && state.document.levelId === state.currentLevel && !state.readonly && !state.groupEdit;
+  const levelName = state.project?.levels.find(level => level.id === targetLevel)?.name || targetLevel;
   const selected = activePreview?.rooms.filter((_, index) => !excluded.has(index)) ?? [];
 
   function inspect() {
-    setPreview(undefined);
-    setNotice('');
-    try {
-      setPreview({ ...previewAutomaticRooms(state, scope), project: state.project, document: state.document });
-      setExcluded(new Set());
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-    }
+    if (!ready) return;
+    setReview(inspectRooms(state, scope));
+    setExcluded(new Set());
   }
 
   function createRooms() {
@@ -41,27 +49,28 @@ export function AutomaticRooms() {
       const firstName = automaticRoomName(first.levelName, activePreview.firstNumber);
       const lastName = automaticRoomName(last.levelName, activePreview.firstNumber + selected.length - 1);
       dispatch({ type: 'APPLY_LEVEL_EDITS', description: '自动创建房间', patches });
-      setPreview(undefined);
-      setNotice(`已创建 ${selected.length} 个房间（${firstName}${selected.length > 1 ? ` 至 ${lastName}` : ''}）。`);
+      setReview({ notice: `已创建 ${selected.length} 个房间（${firstName}${selected.length > 1 ? ` 至 ${lastName}` : ''}）。` });
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      setReview({ preview: activePreview, notice: error instanceof Error ? error.message : String(error) });
     }
   }
 
   let next = activePreview?.firstNumber ?? 1;
   return (
-    <details>
+    <details open={request ? true : undefined} className={request ? 'model-qa-room-plan' : undefined}>
       <summary>自动创建房间</summary>
-      <label>楼层范围<select value={scope} onChange={event => {
+      {request ? <p>范围 {scope === 'project' ? `全部楼层（${state.project?.levels.length ?? 0} 层）` : levelName}</p>
+        : <label>楼层范围<select value={scope} onChange={event => {
         setScope(event.target.value === 'project' ? 'project' : 'level');
-        setPreview(undefined);
-        setNotice('');
+        setReview({ notice: '' });
       }}>
         <option value="level">当前楼层{levelName ? `（${levelName}）` : ''}</option>
         <option value="project">全部楼层</option>
-      </select></label>
-      <button type="button" disabled={!ready} onClick={inspect}>识别闭合房间</button>
+      </select></label>}
+      {(!request || !activePreview) &&
+        <button type="button" disabled={!ready} onClick={inspect}>识别闭合房间</button>}
       {notice && <p role="status" className="area-status">{notice}</p>}
+      {levelChanged && <p role="status">请回到 {levelName} 后重新识别。</p>}
       {stale && <p role="status" className="area-status">模型或当前楼层已变化，请重新识别。</p>}
       {activePreview && <>
         <p role="status" className="area-status">
