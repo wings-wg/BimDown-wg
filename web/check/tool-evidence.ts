@@ -18,6 +18,30 @@ export type DoorUseEvidence = { object: ObjectRef; use: DoorUse; source: string;
   openingAngleDeg: number; measurementLine: string };
 type ClearHeightAreas = { object: ObjectRef; belowHeightMetres: number; usableAreaM2: number; lowAreaM2: number;
   boundaryRef: string; source: string; confirmed: boolean };
+type Observation = { object: ObjectRef; revitUniqueId: string; modelFacts: Record<string, unknown> | null };
+export const roomExportLabels = {
+  disabled: '导出时未勾选「房间」',
+  'no-host-rooms': '宿主 Revit 模型没有建筑房间',
+  'no-placed-rooms': '建筑房间尚未放置',
+  'no-csv-rows': '已放置房间未写入空间表',
+  'no-positive-area': '已放置房间没有正面积',
+  'missing-level-scope': '房间记录没有绑定到导出楼层',
+  'no-footprints': '楼层房间未提取到有效轮廓',
+  partial: '部分房间未生成有效轮廓',
+  complete: '宿主房间已生成轮廓',
+} as const;
+type RoomExport = { status: keyof typeof roomExportLabels; hostRooms: number; placedRooms: number;
+  csvRows: number; footprints: number; mepSpaces: number; linkInstances: number };
+
+function readRoomExport(value: unknown): RoomExport | undefined {
+  const data = value as RoomExport | null;
+  if (!data || !Object.hasOwn(roomExportLabels, data.status) ||
+      ![data.hostRooms, data.placedRooms, data.csvRows, data.footprints, data.mepSpaces, data.linkInstances]
+        .every(number => Number.isSafeInteger(number) && number >= 0) ||
+      data.placedRooms > data.hostRooms || data.footprints > data.csvRows) return undefined;
+  const { status, hostRooms, placedRooms, csvRows, footprints, mepSpaces, linkInstances } = data;
+  return { status, hostRooms, placedRooms, csvRows, footprints, mepSpaces, linkInstances };
+}
 
 export function parseEvidence(text: string | null, projectRevision?: string) {
   const facts = new Map<string, Map<string, Fact>>();
@@ -25,10 +49,12 @@ export function parseEvidence(text: string | null, projectRevision?: string) {
   const applicability = new Map<string, Applicable>();
   const classifications = new Map<string, DoorUseEvidence>();
   const clearHeightAreas = new Map<string, ClearHeightAreas>();
-  const empty = { facts, duplicate, applicability, classifications, clearHeightAreas };
-  if (!text) return { ...empty, spaceRelations: undefined };
+  const observations = new Map<string, Observation>();
+  const empty = { facts, duplicate, applicability, classifications, clearHeightAreas, observations };
+  if (!text) return { ...empty, spaceRelations: undefined, roomExport: undefined };
   const value = JSON.parse(text) as { version?: number; modelRevision?: string; measurements?: Fact[];
-    applicability?: Applicable[]; doorUses?: DoorUseEvidence[]; clearHeightAreas?: ClearHeightAreas[]; spaceRelations?: unknown };
+    applicability?: Applicable[]; doorUses?: DoorUseEvidence[]; clearHeightAreas?: ClearHeightAreas[];
+    spaceRelations?: unknown; observations?: unknown; roomExport?: unknown };
   if (value?.version !== 1 || !Array.isArray(value.measurements) || !Array.isArray(value.applicability) ||
       (value.doorUses !== undefined && !Array.isArray(value.doorUses)) ||
       (value.clearHeightAreas !== undefined && !Array.isArray(value.clearHeightAreas)) ||
@@ -76,7 +102,19 @@ export function parseEvidence(text: string | null, projectRevision?: string) {
     if (clearHeightAreas.has(key)) duplicate.add(key);
     clearHeightAreas.set(key, entry);
   }
-  return { ...empty, spaceRelations: value.spaceRelations };
+  // These optional exporter hints are never inputs to the reviewed measurement maps.
+  if (Array.isArray(value.observations) && value.observations.length <= 100_000) {
+    const repeated = new Set<string>();
+    for (const observation of value.observations as (Observation | null)[]) {
+      if (!observation || !validRef(observation.object) || !textPresent(observation.revitUniqueId)) continue;
+      const key = objectId(observation.object);
+      if (observations.delete(key)) repeated.add(key);
+      if (repeated.has(key)) continue;
+      const facts = observation.modelFacts;
+      observations.set(key, { ...observation, modelFacts: facts && typeof facts === 'object' && !Array.isArray(facts) ? facts : null });
+    }
+  }
+  return { ...empty, spaceRelations: value.spaceRelations, roomExport: readRoomExport(value.roomExport) };
 }
 
 export function toolDataContract(recipe: ToolRecipe) {

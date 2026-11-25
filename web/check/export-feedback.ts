@@ -1,10 +1,12 @@
 import type { CheckItem } from './check-import.js';
 import { HEIGHT, ROOM_NET_AREA } from './pal-plan.js';
 import { toolDataContract } from './tool-evidence.js';
+import type { Blocker, PalDiagnosis } from './pal-readiness.js';
 
 export interface ExportFeedback {
   ruleId: string;
   affected: number;
+  blockers: { kind: Blocker; count: number }[];
   files: string[];
   fields: string[];
   advice: string;
@@ -12,16 +14,21 @@ export interface ExportFeedback {
 }
 
 /** Use engineering evidence contracts; don't infer export instructions from provider prose. */
-export function buildExportFeedback(items: CheckItem[], results: { ruleId: string; status: string }[]): ExportFeedback[] {
-  const unresolved = new Map<string, number>();
+export function buildExportFeedback(items: CheckItem[], results: { ruleId: string; status: string; diagnosis?: PalDiagnosis }[]): ExportFeedback[] {
+  const unresolved = new Map<string, { affected: number; counts: Map<Blocker, number> }>();
   for (const result of results) {
-    if (result.status === 'indeterminate')
-      unresolved.set(result.ruleId, (unresolved.get(result.ruleId) ?? 0) + 1);
+    if (result.status !== 'indeterminate') continue;
+    const entry = unresolved.get(result.ruleId) ?? { affected: 0, counts: new Map<Blocker, number>() };
+    entry.affected++;
+    for (const kind of result.diagnosis?.blockers ?? [])
+      entry.counts.set(kind, (entry.counts.get(kind) ?? 0) + 1);
+    unresolved.set(result.ruleId, entry);
   }
   return items.flatMap(item => {
-    const affected = unresolved.get(item.id) ?? 0;
-    if (!affected) return [];
-    const base = { ruleId: item.id, affected };
+    const entry = unresolved.get(item.id);
+    if (!entry) return [];
+    const base = { ruleId: item.id, affected: entry.affected,
+      blockers: [...entry.counts].map(([kind, count]) => ({ kind, count })) };
     const toolRule = item.rule ?? item.doorWidthRule;
     if (item.libraryTool && toolRule) {
       const { recipe } = item.libraryTool;

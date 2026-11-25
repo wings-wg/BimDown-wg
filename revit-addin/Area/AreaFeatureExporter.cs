@@ -25,14 +25,16 @@ internal static class AreaFeatureExporter
     }
 
     internal static void Write(Document doc, string directory,
-        IReadOnlyDictionary<string, string> ids, List<string> errors)
+        IReadOnlyDictionary<string, string> ids, Func<string, string?> scopeOf, List<string> errors)
     {
         var rooms = new FilteredElementCollector(doc).OfClass(typeof(SpatialElement))
-            .OfType<Room>().Where(r => r.Area > 0 && r.Location is LocationPoint).ToList();
+            .OfType<Room>().Where(r => scopeOf(r.UniqueId) is not null && r.Area > 0 && r.Location is LocationPoint).ToList();
         var doors = new FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_Doors)
             .WhereElementIsNotElementType().OfType<FamilyInstance>().ToList();
         var covers = new List<(string Id, Solid Solid, BoundingBoxXYZ Box)>();
-        foreach (var category in new[] { BuiltInCategory.OST_Roofs, BuiltInCategory.OST_Floors, BuiltInCategory.OST_Ceilings })
+        BuiltInCategory[] coverCategories = rooms.Count == 0 ? [] :
+            [BuiltInCategory.OST_Roofs, BuiltInCategory.OST_Floors, BuiltInCategory.OST_Ceilings];
+        foreach (var category in coverCategories)
             foreach (var element in new FilteredElementCollector(doc).OfCategory(category).WhereElementIsNotElementType())
                 try
                 {
@@ -105,7 +107,7 @@ internal static class AreaFeatureExporter
                         relation = other is null ? "unresolved_or_exterior" : "door_adjacency" });
                 }
                 results.Add(new {
-                    id = ids.GetValueOrDefault(room.UniqueId), uuid = room.UniqueId, name = room.Name,
+                    id = ids.GetValueOrDefault(room.UniqueId), scope = scopeOf(room.UniqueId), uuid = room.UniqueId, name = room.Name,
                     phaseUuid = doc.GetElement(room.get_Parameter(BuiltInParameter.ROOM_PHASE).AsElementId())?.UniqueId,
                     isCommon = Confirmed(room, "IsCommon"),
                     // Sampling evidence is deliberately not asserted as an exact coverage boolean.

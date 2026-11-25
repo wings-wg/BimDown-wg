@@ -22,3 +22,25 @@ npm exec -- vitest run app/src/check/pal-offline.test.ts app/src/check/storey-he
 ```
 
 合成文件由 [fixtures](../../web/check/pal-offline-fixture.ts) 构造，测试调用网页采用的同一规则校验和模型核查执行器。工程证据新增字段见[格式定义](../../spec/engineering_evidence.schema.yaml)，楼层标高口径见[楼层表定义](../../spec/csv-schema/level.yaml)。
+
+## Revit 重导出目录的只读回放
+
+为 `BIMDOWN_PAL_REPLAY_DIR` 指定一个 BIMDown 目录后，原测试套件另外用同六条基准规则运行一次实际目录。可设置 `BIMDOWN_PAL_REPLAY_REPORT` 将结果写到模型目录以外的位置。规则、工具和确认状态来自测试用例。报告把原始核查与模拟确认层高的执行测试分别记录。本地报告含项目对象引用，保留在被 Git 忽略的 `.data/` 下。
+
+```powershell
+# 在 .bimeditor-local 目录运行，把输入路径替换为要回放的实际模型目录。
+$env:BIMDOWN_PAL_REPLAY_DIR = '<BIMDown 模型目录>'
+$env:BIMDOWN_PAL_REPLAY_REPORT = Join-Path (Get-Location) '..\.data\pal-replay\report.json'
+npm exec --offline -- vitest run app/src/check/pal-offline.test.ts
+```
+
+2026-11-25 的新 `dgsh` 工程证据版本匹配，有 19 条标高、21 条结构板和 379 条门观测。已确认量测和适用性均为 0 条。本次重导出未带房间表或轮廓。
+
+| 基准条款 | 实际目录回放 |
+|---|---|
+| JT-01 | 19 个标高待复核，17 组候选标高差为 3.10 m |
+| JG-03 | 21 块结构板待确认适用性和有效结构层厚度，均有名义板厚候选 |
+| JT-12 | 379 樘门待确认适用性、用途及有效通行净宽，34 樘有名义门宽候选 |
+| JT-02、JT-03、JT-08 | 每条规则分别报告缺少房间对象，共 3 条规则级诊断 |
+
+原始回放 419 个对象均无法判断。单独的模拟确认试验把 17 组标高差送入 JT-01 的 3.00 m 基准限值，得到 17 个通过和 2 个仍待确认的标高点。该试验用于验证确定性执行，项目的工程适用性仍待复核。

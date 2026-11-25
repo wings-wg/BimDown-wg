@@ -55,6 +55,31 @@ bimdown area-project ./project-directory -c project-config.json -o report.json
 
 配置沿用nodes/groups/buildingTotals；selections代替手工填写面积，指定id、owner、level、table、elementId、kind、factor、source及可选features。每个选择从`level/table.geojson`查找唯一匹配ID的Polygon，XY投影并按project_metadata.json的m/mm/ft/in转换为米。支持孔洞。需要确认这些轮廓符合测算边界要求；普通space轮廓不自动等于套内产权面积。二维轮廓以外的墙体面积等可通过parts补充（始终平方米）。同一模型轮廓禁止重复选择；不同轮廓之间仍需人工检查空间重叠。
 
-factor=auto调用已有规则。若根目录存在area_features.json，仅导入匹配房间ID的明确布尔covered/enclosed/connectedToIndoor；不会从采样覆盖率或墙边界推断确认值。显式features优先。其余适用条件需要配置提供，缺失时拒绝出具结果。报告包含modelSources，保留模型几何路径及识别证据。未选择的模型对象不会自动参与面积总量；buildingTotals应填写独立审核总量以检查遗漏。
+factor=auto调用已有规则。若根目录存在 area_features.json，按楼层目录和房间 ID 绑定明确的布尔值 covered、enclosed 和 connectedToIndoor。旧记录没有楼层时，仅兼容唯一的房间 ID 记录。采样覆盖率和墙边界仍需人工复核。显式 features 优先。其余适用条件需要配置提供，缺失时拒绝出具结果。报告包含 modelSources，保留模型几何路径及识别证据。未选择的模型对象不会自动参与面积总量。buildingTotals 应填写独立审核总量以检查遗漏。
 
 仅支持format_version=2的GeoJSON输入。压缩包在内存读取，不解压、不修改原模型。输入应为可信项目文件；当前没有为超大压缩包实现资源配额。未实现自动识别户界、用途、分摊服务范围、精确顶盖覆盖和闭合围护；本入口自动执行的是“模型轮廓测算→已确认特征系数→配置分摊”，不是无配置的法定房产测绘。
+
+## 上海 2022 版单幢房产面积
+
+从仓库根目录运行下方合成样例。项目参数也接受 ZIP 或 `.bimdown` 包。默认读取项目根目录的 `property_area.json`，也可用 `-c` 指定独立的复核文件。
+
+```bash
+npm run build --workspace=cli
+node cli/dist/cli.js area-shanghai-2022 sample_data/shanghai-property-example -o report.json
+```
+
+当前支持适用上海 2022 版规则的新测算整幢住宅。每户提供套界中心线面积，或使用面积与应计墙体面积的拆分，以及已复核的专有阳台。分项可以来自带来源的实测平方米值或与项目版本绑定的平面轮廓。幢总建筑面积需独立核定，共有余量应与独立共有台账核对。 [专项证据格式](../../../spec/property_area.schema.yaml)
+
+幢总建筑面积扣除各户套内建筑面积和独立使用等审定扣除项后，按各户套内建筑面积比例分摊。报告保留分项依据、原始面积、0.01 m² 采用值、共有台账差额和四舍五入尾差。输入不足或冲突时返回诊断和退出码 1。历史适用性、水平边长取位、第 1.2.3 节限差和多级分摊有待开发。
+
+### 从导出模型提取候选证据
+
+```powershell
+node cli/dist/cli.js area-shanghai-2022 "C:\path\to\model" --inspect-model -o property-model-evidence.json
+```
+
+目录和压缩包使用相同的取证流程。报告按导出的标高层记录板和屋面投影的合并面积、应用各自宿主洞口后的合并面积、对应作用域和房间证据缺口。同层重复楼板投影只计一次，原轮廓已有的洞口保留，重叠的新增洞口在同一宿主内合并后扣除。单个洞口的叠置面积供定位，整层面积以多边形合并结果为准。跨层洞口和宿主不明的洞口进入核对清单。
+
+`--inspect-model` 输出 `candidate-only` 报告。每个标高层仍需复核是否属于测算自然层。同标高会列出关联层，屋顶用途名称仅作线索。幢总建筑面积、套界、权属和分摊范围由专项复核输入提供。
+
+如果有网页创建的 `space.csv` 房间定位点，取证时可直接沿同层墙中心线和房间分隔线推导候选轮廓。已有轮廓保留其已声明的边界口径。重叠、重复定位点、未闭合或无法确认内圈的房间列为待核。候选报告保留楼层作用域、房间编号、来源文件和以米表示的轮廓坐标。取证不写入项目目录。

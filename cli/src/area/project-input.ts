@@ -39,6 +39,14 @@ export function calculateProjectAreasFromText(
   if (!scale) throw new Error(`Unsupported or missing project units: ${meta.units}`);
   const evidenceText = text('area_features.json');
   const evidence = evidenceText ? JSON.parse(evidenceText) : undefined;
+  type RoomEvidence = Pick<AreaFeatures, 'covered' | 'enclosed' | 'connectedToIndoor'> & { id?: string; scope?: string };
+  const evidenceById = new Map<string, RoomEvidence[]>();
+  for (const room of (evidence?.rooms ?? []) as RoomEvidence[]) {
+    if (!room?.id) continue;
+    const matches = evidenceById.get(room.id) ?? [];
+    matches.push(room);
+    evidenceById.set(room.id, matches);
+  }
   const parts: AreaPart[] = [...(config.parts ?? [])];
   const used = new Set<string>();
   const origins: object[] = [];
@@ -55,7 +63,10 @@ export function calculateProjectAreasFromText(
     const feature = matches[0];
     if (feature.properties?.redundant === true) throw new Error(`Room duplicates another measurement outline: ${key}`);
     // Explicit adapter overrides are reviewed; only confirmed booleans from Revit are imported.
-    const room = evidence?.rooms?.find((r: any) => r.id === selection.elementId);
+    const candidates = selection.table === 'space' ? evidenceById.get(selection.elementId) ?? [] : [];
+    const scoped = candidates.filter(candidate => candidate.scope === selection.level);
+    const room = scoped.length === 1 ? scoped[0]
+      : candidates.length === 1 && candidates[0].scope === undefined ? candidates[0] : undefined;
     const features = selection.features ? { ...selection.features } : undefined;
     if (features && room) for (const name of ['covered', 'enclosed', 'connectedToIndoor'] as const)
       if (features[name] === undefined && typeof room[name] === 'boolean') features[name] = room[name];

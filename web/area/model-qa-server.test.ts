@@ -8,7 +8,9 @@ import { createModelQaHandler } from './model-qa-server.ts';
 import { MODEL_QA_SESSION_HEADER } from './src/area/model-qa-types.ts';
 import { createPalLibrary } from './pal-library-server.ts';
 import { parsePalIntent } from './src/area/pal-intent.ts';
-import { editorCommands, localEditorIntent, matchEditorLevel } from './src/area/editor-commands.ts';
+import { editorCommands, editorIntentHasGroundedTarget, localEditorIntent, matchEditorLevel, resolveDeleteIds } from './src/area/editor-commands.ts';
+import { readCandidatePackage } from './src/check/pal-candidate-package.ts';
+import { toolId, verifyToolRecipe, type ToolRecipe } from './src/check/core/tool-recipes.ts';
 
 const configured = {
   BIMDOWN_QA_MODEL: 'test-bim-model',
@@ -32,6 +34,42 @@ async function invoke(handler: ReturnType<typeof createModelQaHandler>, method: 
 }
 
 describe('model question gateway', () => {
+  it('matches explicit deletion only and never maps a foreign scoped short ID onto the current floor', () => {
+    expect(localEditorIntent('请删除本层的所有门！')).toEqual({ action: 'editor.delete', target: 'table:door' });
+    expect(localEditorIntent('删除构件编号 D-1')).toEqual({ action: 'editor.delete', target: 'id:d-1' });
+    expect(localEditorIntent('删除所有楼层的门')).toBeUndefined();
+    expect(editorIntentHasGroundedTarget({ action: 'editor.delete', target: 'id:d-1' }, '怎么删除 d-1？')).toBe(false);
+    const elements = new Map([['d-1', { tableName: 'door' }], ['w-1', { tableName: 'wall' }]]);
+    expect(resolveDeleteIds('selected', 'lv-1', elements, new Set(['lv-2:d-1']))).toEqual([]);
+    expect(resolveDeleteIds('selected', 'lv-1', elements, new Set(['lv-1:d-1']))).toEqual(['d-1']);
+    expect(resolveDeleteIds('table:door', 'lv-1', elements, new Set())).toEqual(['d-1']);
+  });
+
+  it('binds candidate packages to source rows, verifies atomically and refreshes the same service without re-adding tools', async () => {
+    const recipe: ToolRecipe = { concept: 'slab.cast-in-place-solid-structural-thickness', operation: 'read',
+      inputs: ['slab.cast-in-place-solid-structural-thickness'] };
+    const clause = { id: 'JG-03', target: '现浇实心楼板', attribute: '有效结构层厚',
+      condition: '结构层厚度低于 100mm 判FAIL', limit: '', reference: '', applicability: '非悬挑板', note: '' };
+    const source = { document: '合成工作簿', locator: '规则!第2行', text: clause.condition };
+    const input = [{ id: clause.id, clause, source }];
+    const proposal = { id: clause.id, kind: 'tool-draft', recipe, operator: '>=', threshold: '100mm' };
+    const entry = { clause, source, proposal, verification: verifyToolRecipe(recipe) };
+    const pack = { version: 1, origin: 'Codex', entries: [entry] };
+    const handler = createModelQaHandler({}, vi.fn<typeof fetch>());
+    const route = '/pal/library/import';
+    const library = () => invoke(handler, 'GET', undefined, {}, '/pal/library');
+    expect(readCandidatePackage(pack, input).entries).toHaveLength(1);
+    expect(() => readCandidatePackage({ ...pack, entries: [{ ...entry, source: { ...entry.source, locator: 'wrong row' } }] },
+      input)).toThrow(/不匹配/);
+    expect((await invoke(handler, 'POST', { ...pack, entries: [{ ...entry, verification: [] }] }, {}, route)).code).toBe(400);
+    expect((await library()).data).toEqual({ tools: [] });
+    expect((await invoke(handler, 'POST', pack, {}, route)).data).toMatchObject({ tools: [{ status: 'draft' }] });
+    expect((await invoke(handler, 'POST', pack, {}, route)).code).toBe(200);
+    expect((await library()).data).toMatchObject({ tools: [{ status: 'draft' }] });
+    expect((await invoke(handler, 'POST', { toolId: toolId(recipe), reviewed: true }, {}, '/pal/library/approve')).code).toBe(200);
+    expect((await invoke(handler, 'POST', pack, {}, route)).data).toMatchObject({ tools: [{ status: 'active' }] });
+  });
+
   it('recognizes explicit view and room commands locally but leaves how-to questions and scope changes alone', () => {
     expect(localEditorIntent('请帮我切换到 ３Ｄ 视图！')).toEqual({ action: 'editor.set-view', mode: '3d' });
     expect(localEditorIntent('把这个模型的显示方式改为三维视图')).toEqual({ action: 'editor.set-view', mode: '3d' });

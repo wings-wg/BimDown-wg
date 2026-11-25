@@ -1,6 +1,6 @@
 type Definition = {
   field?: string;
-  values?: readonly string[] | 'level-name';
+  values?: readonly string[] | 'level-name' | 'element-target';
   syntax: string;
   examples: readonly string[];
   match: (request: string) => string | true | undefined;
@@ -28,6 +28,28 @@ const areaWorkflows = {
 } as const;
 const pick = <T extends Record<string, string>>(options: T, text: string):
   T[keyof T] | undefined => Object.hasOwn(options, text) ? options[text] as T[keyof T] : undefined;
+
+const deletionTables = { 门: 'door', 窗: 'window', 房间: 'space', 墙: 'wall', 结构墙: 'structure_wall',
+  柱: 'column', 结构柱: 'structure_column', 楼板: 'slab', 结构板: 'structure_slab', 梁: 'beam',
+  风管: 'duct', 管道: 'pipe', 楼梯: 'stair' } as const;
+const elementIdPattern = /^[a-z][a-z0-9_-]*-\d+$/;
+function deletionTarget(request: string) {
+  if (/^删除(?:当前)?(?:已)?选中(?:的)?(?:构件|对象)?$/.test(request)) return 'selected';
+  const category = /^(?:在(?:当前楼层|当前层|本层))?删除(?:(?:当前楼层|当前层|本层)(?:的)?)?(?:全部|所有)(.+)$/.exec(request)?.[1];
+  const table = category && pick(deletionTables, category);
+  if (table) return `table:${table}`;
+  const id = /^删除(?:(?:当前楼层|当前层|本层)(?:的)?)?(?:(?:构件|对象)(?:编号)?)?(.+)$/.exec(request)?.[1];
+  return id && elementIdPattern.test(id) ? `id:${id}` : undefined;
+}
+
+export function resolveDeleteIds(target: string, level: string, elements: ReadonlyMap<string, { tableName: string }>,
+  selected: ReadonlySet<string>) {
+  if (target.startsWith('id:')) return [...elements.keys()].filter(id => id.toLowerCase() === target.slice(3)).slice(0, 2);
+  if (target.startsWith('table:')) return [...elements].filter(([, element]) => element.tableName === target.slice(6)).map(([id]) => id);
+  if (target !== 'selected') return [];
+  const ids = [...selected].map(id => id.includes(':') ? (id.startsWith(`${level}:`) ? id.slice(level.length + 1) : '') : id);
+  return ids.some(id => !elements.has(id)) ? [] : [...new Set(ids)];
+}
 
 export const editorCommands = {
   'editor.set-view': {
@@ -98,6 +120,12 @@ export const editorCommands = {
     match: (r: string) => /^(?:撤销|撤回)(?:刚才的操作|上一步|上一项操作)?$/.test(r) ? 'undo'
       : /^重做(?:上一步|上一次操作)?$/.test(r) ? 'redo' : undefined,
   },
+  'editor.delete': {
+    field: 'target', values: 'element-target',
+    syntax: '准备删除当前楼层的明确对象。target 使用 selected、id:构件ID 或 table:表名。始终要求界面确认。',
+    examples: ['删除选中的构件', '删除d-1', '删除本层全部门'],
+    match: deletionTarget,
+  },
   'editor.preview-rooms': {
     field: 'scope', values: ['level', 'project'],
     syntax: '识别闭合房间并准备预览。scope 为 level（明确要求当前楼层）或 project（明确要求全部楼层）。交由用户确认后创建。',
@@ -154,7 +182,9 @@ const normalize = (text: string) => text.normalize('NFKC').toLowerCase().replace
 const commands = Object.entries(editorCommands) as [CommandAction, Definition][];
 export const editorCommandExamples = commands.flatMap(([, command]) => [...command.examples]);
 export const editorCommandPrompt = commands.map(([action, command]) => {
-  const args = command.field ? `，${command.field} 为 ${command.values === 'level-name' ? '原文中的楼层指代' : command.values?.join(' / ')}` : '';
+  const args = command.field ? `，参数 ${command.field}` : '';
+  if (Array.isArray(command.values)) return `${action}${args} 为 ${command.values.join(' / ')}。${command.syntax}`;
+  if (command.values === 'level-name') return `${action}${args} 为原文中的楼层指代。${command.syntax}`;
   return `${action}${args}。${command.syntax}`;
 });
 export function isEditorIntent(value: { action: string } | undefined): value is EditorIntent {
@@ -172,6 +202,9 @@ export function parseEditorIntent(value: unknown): EditorIntent | undefined {
   if (Object.keys(plan).length !== 2 || typeof parameter !== 'string') return undefined;
   if (command.values === 'level-name') {
     if (!parameter.trim() || parameter.length > 80 || /[\r\n?？]/.test(parameter)) return undefined;
+  } else if (command.values === 'element-target') {
+    if (parameter !== 'selected' && !(parameter.startsWith('id:') && parameter.length <= 83 && elementIdPattern.test(parameter.slice(3))) &&
+        !(parameter.startsWith('table:') && Object.values<string>(deletionTables).includes(parameter.slice(6)))) return undefined;
   } else if (!command.values?.includes(parameter)) return undefined;
   return { action, [command.field]: parameter } as EditorIntent;
 }
@@ -194,6 +227,7 @@ export function localEditorIntent(text: string): EditorIntent | undefined {
 
 /** Only check the floor reference here. The language model interprets the surrounding request. */
 export function editorIntentHasGroundedTarget(plan: EditorIntent, text: string): boolean {
+  if (plan.action === 'editor.delete') return deletionTarget(commandText(text)) === plan.target;
   if (!('target' in plan)) return true;
   const target = normalize(plan.target);
   if (!target) return false;

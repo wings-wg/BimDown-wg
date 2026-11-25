@@ -65,6 +65,7 @@ export interface RoomSeed { id: string; x: number; y: number; /** Coordinates as
 export interface DerivedRooms {
   /** Space id → the face it lies in. */
   matched: Map<string, Face>;
+  faces: Face[];
   roomIssues: RoomIssue[];
   warnings: string[];
 }
@@ -125,7 +126,7 @@ export function deriveRooms(level: string, segments: Segment[], seeds: RoomSeed[
   const overlap = findRoomOverlaps(level, matched, seedMap, units);
   roomIssues.push(...overlap.roomIssues);
   warnings.push(...overlap.warnings);
-  return { matched, roomIssues, warnings };
+  return { matched, faces, roomIssues, warnings };
 }
 
 // ─── Derived-room overlap checks ────────────────────────

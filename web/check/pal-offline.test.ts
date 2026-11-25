@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { bindPalPlan, importJsonRules } from './check-import.js';
 import { readCheckLevels, runModelCheck } from './check-model.js';
 import { offlineCompilationInput, offlineModel, offlineRules } from './pal-offline-fixture.js';
 import { validatePalResponse } from './pal-plan.js';
 import { suggestStoreyChoices } from './storey-height.js';
+import { compareModelCheckReports, readComparisonBaseline } from './report-comparison.js';
 
 const reader = (files: Map<string, string>) => ({ fetchText: async (path: string) => files.get(path) ?? null });
 const evidencePath = 'engineering_evidence.json';
@@ -19,6 +22,75 @@ async function replay(files: Map<string, string>, confirmLevels = false, items =
 }
 
 describe('offline BIMDown PAL benchmark', () => {
+  it('tracks 97 original rows and compares only rerun rules by scoped object', async () => {
+    const originals = offlineRules();
+    const items = [...originals, ...Array.from({ length: 91 }, (_, i) => ({
+      id: `P-${i + 1}`, title: '待编译原文', source: { document: '合成工作簿', locator: `规则表!第${i + 8}行`, text: '原条款' },
+      reason: '等待 PAL 编译',
+    }))];
+    const baseline = await replay(offlineModel('baseline'), false, items);
+    expect(baseline.clauseTrace).toHaveLength(97);
+    expect(baseline.clauseTrace.filter(item => item.status === 'pending')).toHaveLength(91);
+    expect(baseline.clauseTrace[96].source.locator).toBe('规则表!第98行');
+    const rerun = await replay(offlineModel('complete'), false, items.filter(item => item.id === 'JG-03'));
+    const downloaded = JSON.parse(JSON.stringify(baseline));
+    const comparison = compareModelCheckReports(readComparisonBaseline(downloaded, items), rerun);
+    expect(() => readComparisonBaseline(downloaded, items.slice(1))).toThrow(/不符/);
+    expect(comparison.rules).toEqual(['JG-03']);
+    expect(comparison.beforeModelVersion).not.toBe(comparison.afterModelVersion);
+    expect(comparison.changes).toHaveLength(3);
+    expect(comparison.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ object: { scope: 'lv-1', table: 'structure_slab', id: 's-1' }, before: 'indeterminate', after: 'pass' }),
+      expect.objectContaining({ object: { scope: 'lv-2', table: 'structure_slab', id: 's-1' }, before: 'indeterminate', after: 'fail' }),
+    ]));
+  });
+  it('reports export observations and missing prerequisites without binding them as measurements', async () => {
+    const files = offlineModel('baseline');
+    for (const path of files.keys()) if (/\/space\.(csv|geojson)$/.test(path)) files.delete(path);
+    const revision = JSON.parse(files.get('project_metadata.json')!).engineering_revision;
+    const observation = (scope: string, table: string, id: string, modelFacts: object) =>
+      ({ object: { scope, table, id }, revitUniqueId: `${scope}/${table}/${id}`, modelFacts, confirmed: true });
+    const slab = observation('lv-1', 'structure_slab', 's-1', { nominalThicknessM: 0.12 });
+    const sidecar = { version: 1, modelRevision: revision, measurements: [], applicability: [],
+      roomExport: { status: 'disabled', hostRooms: 2, placedRooms: 2, csvRows: 0, footprints: 0, mepSpaces: 0, linkInstances: 1 },
+      observations: [
+      observation('global', 'level', 'lv-1', { exportedElevationM: 0, candidateUpperLevelId: 'lv-2' }),
+      slab, observation('lv-2', 'structure_slab', 's-1', { nominalThicknessM: 0.09 }),
+      observation('lv-1', 'door', 'd-1', { nominalWidthM: 0.9 }),
+    ] };
+    files.set(evidencePath, JSON.stringify(sidecar));
+    const report = await replay(files);
+    expect(report.evidenceInventory).toMatchObject({ status: 'loaded', confirmedMeasurements: 0,
+      roomExport: { status: 'disabled', hostRooms: 2, footprints: 0 },
+      observedByTable: { level: 1, structure_slab: 2, door: 1 } });
+    expect(report.results.every(row => row.status === 'indeterminate')).toBe(true);
+    const find = (id: string, scope?: string, objectId?: string) =>
+      report.results.find(row => row.ruleId === id && row.object?.scope === scope && row.object?.id === objectId);
+    expect(find('JT-01', 'global', 'lv-1')).toMatchObject({
+      diagnosis: { blockers: ['confirm-level'], candidate: { value: 3, label: '候选标高差', relatedObject: { id: 'lv-2' } } },
+    });
+    expect(find('JG-03', 'lv-1', 's-1')?.diagnosis).toMatchObject({
+      blockers: ['confirm-applicability', 'confirm-measurement'], candidate: { value: 0.12, label: '名义板厚' },
+    });
+    expect(find('JG-03', 'lv-2', 's-1')?.diagnosis?.candidate?.value).toBe(0.09);
+    expect(find('JT-12', 'lv-1', 'd-1')?.diagnosis?.blockers).toEqual([
+      'confirm-applicability', 'confirm-measurement', 'confirm-door-use',
+    ]);
+    for (const rule of ['JT-02', 'JT-03', 'JT-08'])
+      expect(find(rule)).toMatchObject({ object: null, diagnosis: { blockers: ['missing-object'] } });
+    expect(report.exportFeedback.find(row => row.ruleId === 'JT-12')?.blockers)
+      .toContainEqual({ kind: 'confirm-door-use', count: 5 });
+
+    sidecar.observations.push(slab);
+    files.set(evidencePath, JSON.stringify(sidecar));
+    expect((await replay(files)).results.find(row => row.ruleId === 'JG-03' && row.object?.scope === 'lv-1' &&
+      row.object.id === 's-1')?.diagnosis?.candidate).toBeUndefined();
+    sidecar.modelRevision = 'stale';
+    files.set(evidencePath, JSON.stringify(sidecar));
+    const stale = await replay(files);
+    expect(stale.evidenceInventory.status).toBe('invalid');
+    expect(stale.results.find(row => row.ruleId === 'JG-03')?.diagnosis).toEqual({ blockers: ['invalid-evidence'] });
+  });
   it('denies determinate results for baseline and stale evidence without confirmations', async () => {
     const baseline = await replay(offlineModel('baseline'));
     const stale = await replay(offlineModel('stale'));
@@ -80,6 +152,17 @@ describe('offline BIMDown PAL benchmark', () => {
     expect(statuses(duplicate, 'JT-08')['lv-2/r-1']).toBe('indeterminate');
   });
 
+  it('checks the coordinate frame declared by the exported footprint', async () => {
+    const files = offlineModel('complete');
+    const path = 'lv-2/space.geojson';
+    const geometry = JSON.parse(files.get(path)!);
+    geometry.features[0].properties.frame = 'another-export-frame';
+    files.set(path, JSON.stringify(geometry));
+    const report = await replay(files);
+    expect(report.results.find(row => row.ruleId === 'JT-08' && row.object?.scope === 'lv-2' && row.object.id === 'r-1'))
+      .toMatchObject({ status: 'indeterminate', diagnosis: { blockers: ['input-conflict'] } });
+  });
+
   it('verifies each door limit against its own quote and requires approved tools and rules for import', () => {
     const { input, proposals, tools } = offlineCompilationInput();
     const jt12 = input.find(item => item.id === 'JT-12')!;
@@ -117,4 +200,43 @@ describe('offline BIMDown PAL benchmark', () => {
     const [{ plan }] = validatePalResponse(JSON.stringify({ rules: [{ id: clause.id, kind: 'space-projection-exclusion' }] }), [clause]);
     expect(plan.kind).toBe('blocked');
   });
+});
+
+const replayDirectory = process.env.BIMDOWN_PAL_REPLAY_DIR;
+it.skipIf(!replayDirectory)('replays the actual directory without modifying the model', async () => {
+  const root = resolve(replayDirectory!);
+  const isWithinModel = (file: string) => {
+    const fromRoot = relative(root, file);
+    return !isAbsolute(fromRoot) && fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`);
+  };
+  const ds = {
+    async fetchText(path: string) {
+      const file = resolve(root, path);
+      if (!isWithinModel(file)) throw new Error('Invalid relative model path');
+      try { return await readFile(file, 'utf8'); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+      }
+    },
+  };
+  const { levels, raw } = await readCheckLevels(ds);
+  expect(levels.length).toBeGreaterThan(0);
+  const items = offlineRules();
+  const report = await runModelCheck(ds, items, new Map(), raw);
+  const testChoices = new Map(report.results.flatMap(row => {
+    const upper = row.diagnosis?.candidate?.relatedObject;
+    return row.object && row.ruleId === 'JT-01' && upper ? [[row.object.id, { mode: 'upper' as const, id: upper.id }]] : [];
+  }));
+  const simulated = await runModelCheck(ds, items.filter(item => item.id === 'JT-01'), testChoices, raw);
+  expect(simulated.results.filter(row => 'evidence' in row)).toHaveLength(testChoices.size);
+  const output = process.env.BIMDOWN_PAL_REPLAY_REPORT;
+  if (output) {
+    const file = resolve(output);
+    if (isWithinModel(file)) throw new Error('Report must be outside the model directory');
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify({ ruleBasis: 'Synthetic benchmark rules and independent tool fixtures',
+      report, simulatedLevelReview: { purpose: 'Execution test only, no actual reviewer confirmation', results: simulated.results },
+    }, null, 2));
+  }
 });

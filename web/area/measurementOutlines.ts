@@ -1,5 +1,5 @@
 import { insidePoint } from '../geometry/pickBoundary.ts';
-import { roomAreas, signedArea } from '../geometry/roomArea.ts';
+import { roomAreas } from '../geometry/roomArea.ts';
 import { findSpaceBoundary, getSpaceFaceGraph } from '../geometry/spaceBoundary.ts';
 import type { Point } from '../model/elements.ts';
 import type { Level } from '../types.ts';
@@ -9,13 +9,14 @@ import { getProjectUnits, unitsPerMetreOf } from '../utils/units.ts';
 import { nestedRoomFaces, roomBoundaryWalls, spanningRoomWalls } from './autoRooms.ts';
 import type { EditorState } from './editorTypes.ts';
 import { levelElements } from './levelEdits.ts';
+import { simpleRoomBoundary } from './room-ring.js';
 
 type Scope = 'level' | 'project';
 type Room = { elementId: string; name: string };
 type Issue = { level: string; room?: Room; reason: string };
 type Feature = {
   type: 'Feature';
-  properties: { id: string; net_area?: number };
+  properties: { id: string; boundary_basis: 'wall-centerline'; net_area?: number };
   geometry: { type: 'Polygon'; coordinates: [number, number][][] };
 };
 type SavedFeature = {
@@ -23,19 +24,6 @@ type SavedFeature = {
   geometry?: { type?: string; coordinates?: unknown };
 };
 type Result = { generated: number; preserved: number; issues: Issue[] };
-
-/** Drop out-and-back wall branches from a face and reject ambiguous rings. */
-function simpleBoundary(face: Point[]): Point[] | null {
-  const keys = face.map(({ x, y }) => `${x},${y}`);
-  const edges = keys.map((from, i) => ({ from, to: keys[(i + 1) % keys.length], point: face[i] }));
-  const edgeKeys = new Set(edges.map(({ from, to }) => `${from}:${to}`));
-  const boundary = edges.filter(({ from, to }) => from !== to && !edgeKeys.has(`${to}:${from}`));
-  if (boundary.length < 3 || new Set(boundary.map(edge => edge.from)).size !== boundary.length ||
-      boundary.some((edge, i) => edge.to !== boundary[(i + 1) % boundary.length].from)) return null;
-
-  const points = boundary.map(edge => edge.point);
-  return points.every(({ x, y }) => Number.isFinite(x) && Number.isFinite(y)) && signedArea(points) > 0 ? points : null;
-}
 
 function deriveOutlines(state: EditorState, level: Level, upm: number, spans: ReturnType<typeof spanningRoomWalls>['spans']) {
   const elements = [...levelElements(state, level.id).values()];
@@ -57,13 +45,13 @@ function deriveOutlines(state: EditorState, level: Level, upm: number, spans: Re
     if (!face) return { room, reason: '房间定位点未落在闭合墙体区域内。' };
     if ((occupants.get(face) ?? 0) > 1) return { room, reason: '同一闭合区域有多个房间，请核对重复房间。' };
     if (nested.has(face)) return { room, reason: '轮廓存在嵌套，需核对孔洞和测算边界。' };
-    const polygon = simpleBoundary(face);
+    const polygon = simpleRoomBoundary(face);
     if (!polygon) return { room, reason: '无法生成单一有效轮廓，请核对墙体交接。' };
     const ring = polygon.map(({ x, y }): [number, number] => [x, y]);
     const net = roomAreas(polygon, walls, upm);
     return { room, feature: {
       type: 'Feature',
-      properties: { id: room.elementId, ...(net.netPolygon && { net_area: net.area }) },
+      properties: { id: room.elementId, boundary_basis: 'wall-centerline', ...(net.netPolygon && { net_area: net.area }) },
       geometry: { type: 'Polygon', coordinates: [[...ring, ring[0]]] },
     } };
   });

@@ -3,6 +3,7 @@ import { executeSpaceOverlap } from './core/overlap.js';
 import { geoJsonToJsts } from './geo/geojson-to-jsts.js';
 import { type readCheckRooms } from './check-model.js';
 import { objectId, parseEvidence, TOOL_EVIDENCE_PATH } from './tool-evidence.js';
+import type { Blocker } from './pal-readiness.js';
 
 export const OVERLAP = 'space.projected-overlap-area';
 export type SpaceOverlapRule = Pick<EngineeringRule, 'id' | 'version' | 'reviewed' | 'source' | 'applicability'> &
@@ -60,6 +61,12 @@ function ringsFor(level: Floor, id: string) {
   } catch { return undefined; }
 }
 
+function footprintMatchesFrame(level: Floor, id: string, frame: string) {
+  const features = level.byId.get(id)?.features;
+  const recorded = features?.length === 1 ? features[0].properties?.frame : undefined;
+  return recorded === undefined || recorded === frame;
+}
+
 /** A pass requires the confirmed inventory for the paired lower storey. */
 export function checkSpaceOverlap(rule: SpaceOverlapRule, inventory: RoomInventory, text: string | null,
   projectRevision: string | undefined, modelVersion: string, unit?: string) {
@@ -80,16 +87,17 @@ export function checkSpaceOverlap(rule: SpaceOverlapRule, inventory: RoomInvento
   return inventory.rooms.map(({ scope, id, name }) => {
     const object = { scope, table: 'space' as const, id };
     const row = { ...base, object, name };
-    const pending = (reason: string) => ({ ...row, status: 'indeterminate' as const, reason });
-    if (!evidence) return pending(error ?? '缺少工程证据。');
+    const pending = (reason: string, blocker: Blocker) => ({ ...row, status: 'indeterminate' as const, reason, blocker });
+    if (!evidence) return pending(error ?? '缺少工程证据。', 'invalid-evidence');
     const key = objectId(object);
     const scopeKey = JSON.stringify([key, rule.id, rule.version, rule.applicability]);
     const decision = evidence.applicability.get(scopeKey);
-    if (!rule.reviewed || !decision || evidence.duplicate.has(scopeKey)) return pending('缺少本条款和房间的适用性确认。');
+    if (!rule.reviewed || !decision || evidence.duplicate.has(scopeKey))
+      return pending('缺少本条款和房间的适用性确认。', evidence.duplicate.has(scopeKey) ? 'input-conflict' : 'confirm-applicability');
     if (decision.decision === 'does-not-apply')
       return { ...row, status: 'not-applicable' as const, applicabilitySource: decision.source };
-    if (!relations) return pending(error ?? '缺少上下层关系。');
-    if (unit !== 'm' && unit !== 'mm') return pending('跨层投影需要 m 或 mm 的项目坐标单位。');
+    if (!relations) return pending(error ?? '缺少上下层关系。', 'confirm-space-relations');
+    if (unit !== 'm' && unit !== 'mm') return pending('跨层投影需要 m 或 mm 的项目坐标单位。', 'execution-input');
     const pair = relations.pairs.get(scope);
     const first = relations.footprints.get(key);
     const above = levels.get(scope)!;
@@ -97,23 +105,30 @@ export function checkSpaceOverlap(rule: SpaceOverlapRule, inventory: RoomInvento
     const upperRings = ringsFor(above, id);
     if (!pair || !below?.raw[0] || below.level.elevation === undefined || above.level.elevation === undefined ||
         below.level.elevation >= above.level.elevation || !below.byId.size)
-      return pending('缺少已确认、标高有序的上下层配对或下层房间清单。');
-    if (!above.raw[0] || !above.csvIds.has(id) || !first?.confirmed || first.use !== 'bathroom' || first.frame !== pair.frame || !upperRings)
-      return pending('上层卫生间缺少匹配坐标系的用途或封闭轮廓确认。');
+      return pending('缺少已确认、标高有序的上下层配对或下层房间清单。', 'confirm-space-relations');
+    if (!above.raw[0] || !above.csvIds.has(id) || !first?.confirmed || first.use !== 'bathroom' || first.frame !== pair.frame)
+      return pending('上层卫生间缺少匹配坐标系的用途确认。', 'confirm-space-relations');
+    if (!footprintMatchesFrame(above, id, pair.frame))
+      return pending('上层轮廓导出的坐标基准与复核配对不一致。', 'input-conflict');
+    if (!upperRings) return pending('上层卫生间缺少有效封闭轮廓。', 'missing-outline');
     const matches = [];
-    let missing: string | undefined;
+    let missing: { reason: string; blocker: Blocker } | undefined;
     for (const lowerId of below.byId.keys()) {
       if (++attemptedPairs > 20_000) throw new Error('跨层房间组合超过 20,000 项，请缩小核查范围。');
       const lowerObject = { scope: pair.lower, table: 'space' as const, id: lowerId };
       const second = relations.footprints.get(objectId(lowerObject));
       if (!below.csvIds.has(lowerId) || !second?.confirmed || second.frame !== pair.frame) {
-        missing ??= `下层房间 ${lowerId} 的用途或坐标基准待确认。`;
+        missing ??= { reason: `下层房间 ${lowerId} 的用途或坐标基准待确认。`, blocker: 'confirm-space-relations' };
         continue;
       }
       if (!(prohibited as readonly string[]).includes(second.use)) continue;
+      if (!footprintMatchesFrame(below, lowerId, pair.frame)) {
+        missing ??= { reason: `下层房间 ${lowerId} 的轮廓坐标基准与复核配对不一致。`, blocker: 'input-conflict' };
+        continue;
+      }
       const lowerRings = ringsFor(below, lowerId);
       if (!lowerRings) {
-        missing ??= `下层房间 ${lowerId} 缺少有效封闭轮廓。`;
+        missing ??= { reason: `下层房间 ${lowerId} 缺少有效封闭轮廓。`, blocker: 'missing-outline' };
         continue;
       }
       const result = executeSpaceOverlap({ tool: 'space-overlap',
@@ -122,13 +137,13 @@ export function checkSpaceOverlap(rule: SpaceOverlapRule, inventory: RoomInvento
           { object, source: first.source, confirmed: true, rings: upperRings },
           { object: lowerObject, source: second.source, confirmed: true, rings: lowerRings },
         ] });
-      if (result.status === 'indeterminate') missing ??= result.diagnostic.reason;
+      if (result.status === 'indeterminate') missing ??= { reason: result.diagnostic.reason, blocker: 'execution-input' };
       else matches.push({ status: result.status, lowerObject, evidence: result.evidence });
     }
     const violations = matches.filter(match => match.status === 'fail');
-    if (!violations.length && missing) return pending(missing);
+    if (!violations.length && missing) return pending(missing.reason, missing.blocker);
     return { ...row, status: violations.length ? 'fail' as const : 'pass' as const,
       overlap: { pair, applicabilitySource: decision.source, upperSource: first.source,
-        checked: matches.length, lowerInventory: below.byId.size, violations, ...(missing && { remainingGap: missing }) } };
+        checked: matches.length, lowerInventory: below.byId.size, violations, ...(missing && { remainingGap: missing.reason }) } };
   });
 }

@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "profile": "sh-property-2022-single-building",
+  "modelRevision": "synthetic-sh-property-2022-v1",
+  "building": { "id": "synthetic-building", "parcelId": "synthetic-parcel", "scope": "whole-residential-building", "source": "合成界址及幢范围" },
+  "business": { "type": "new-survey", "measuredOn": "2026-01-01", "source": "合成新测算任务" },
+  "review": { "confirmed": true, "source": "合成算例手算参考" },
+  "frame": "synthetic-local-xy",
+  "gross": { "id": "gross", "basis": "building-perimeter", "areaM2": 260, "source": "合成独立幢总量记录" },
+  "units": [
+    {
+      "id": "A", "ownershipSource": "合成套界 A",
+      "parts": [
+        { "id": "a-1", "basis": "unit-wall-centerline", "geometry": { "level": "lv-1", "id": "a-center" }, "source": "合成图 A，中心线围合" },
+        { "id": "a-2", "basis": "balcony-eligible-footprint", "treatment": "open-eligible",
+          "geometry": { "level": "lv-1", "id": "a-balcony" }, "source": "合成图 A，已复核的计入投影" }
+      ]
+    },
+    {
+      "id": "B", "ownershipSource": "合成套界 B",
+      "parts": [
+        { "id": "b-1", "basis": "unit-usable", "areaM2": 110, "source": "合成使用面积 B" },
+        { "id": "b-2", "basis": "unit-wall-share", "areaM2": 10, "source": "合成套内墙体水平面积 B" }
+      ]
+    }
+  ],
+  "deductions": [
+    { "id": "independent-1", "basis": "deduction", "kind": "independent-use", "areaM2": 20, "source": "合成独立使用空间记录" }
+  ],
+  "common": {
+    "scope": "whole-building", "source": "合成全幢共有性质及受益范围", "beneficiaryUnitIds": ["A", "B"],
+    "parts": [
+      { "id": "common-1", "basis": "common-wall-centerline", "areaM2": 39, "source": "合成共有部位独立台账" },
+      { "id": "common-2", "basis": "outer-half-wall", "areaM2": 1, "source": "合成共有外半墙台账" }
+    ]
+  }
+}

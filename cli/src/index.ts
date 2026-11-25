@@ -432,6 +432,27 @@ program.command('area-project <project>')
     }
   });
 
+program.command('area-shanghai-2022 <project>')
+  .description('Recalculate a reviewed Shanghai 2022 single-building plan (m²)')
+  .option('-c, --config <file>', 'Use reviewed evidence JSON instead of property_area.json in the project')
+  .option('--inspect-model', 'Inventory candidate slabs, hosted openings and room outlines without calculating property area')
+  .option('-o, --output <file>', 'Write a report or evidence diagnostics')
+  .action(async (project, opts) => {
+    try {
+      const { calculateShanghaiPropertyProject, inspectPropertyModelProject } = await import('./area/project.js');
+      const { readFileSync } = await import('node:fs');
+      if (opts.inspectModel && opts.config) throw new Error('--inspect-model cannot be combined with --config');
+      const result = opts.inspectModel ? await inspectPropertyModelProject(project)
+        : await calculateShanghaiPropertyProject(project, opts.config ? readFileSync(opts.config, 'utf8') : undefined);
+      const output = JSON.stringify(result, null, 2) + '\n';
+      if (opts.output) writeFileSync(opts.output, output); else console.log(output);
+      if (result.status === 'input-incomplete') process.exitCode = 1;
+    } catch (error) {
+      console.error(`Shanghai property area calculation failed: ${(error as Error).message}`);
+      process.exitCode = 1;
+    }
+  });
+
 program.command('engineering-check <input>')
   .description('Execute reviewed scalar checks, area allocations and projected space overlaps')
   .option('-o, --output <file>', 'Write auditable JSON results')

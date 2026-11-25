@@ -15,6 +15,7 @@ import { ModelQuestionPanel } from './ModelQuestionPanel.tsx';
 import { ModelCheckPanel } from '../check/ModelCheckPanel.tsx';
 import type { ModelQaConnection } from './model-qa-types.js';
 import { AreaPalPlan } from './AreaPalPlan.tsx';
+import { ShanghaiPropertyArea } from './ShanghaiPropertyArea.tsx';
 import { DevelopmentFeedback } from './DevelopmentFeedback.tsx';
 import type { WorkspaceCommandRequest, WorkspacePanel } from './editor-commands.js';
 import './area.css';
@@ -110,6 +111,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
   const [busy, setBusy] = useState(false);
   const [outlineScope, setOutlineScope] = useState<'level' | 'project'>('level');
   const [outlineResult, setOutlineResult] = useState<Awaited<ReturnType<typeof generateMeasurementOutlines>>>();
+  const [outlineRevision, setOutlineRevision] = useState(0);
   const [outlineError, setOutlineError] = useState('');
   const [doorPreview, setDoorPreview] = useState<DoorPreview>();
   const [doorSource, setDoorSource] = useState<'floor-plan' | 'revit'>('floor-plan');
@@ -326,6 +328,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
       if (liveSource.current.ds !== ds) return;
       setOutlineResult(result);
       if (result.generated) {
+        setOutlineRevision(revision => revision + 1);
         sequence.current += 1;
         doorSequence.current += 1;
         setReport(undefined);
@@ -457,6 +460,10 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
   return (
     <aside id="area-panel" className="area-panel" aria-label="面积测算与分摊" hidden={!open}>
       <header><h2>面积测算与分摊</h2></header>
+      <ShanghaiPropertyArea outlineRevision={outlineRevision} locate={(level, id) => {
+        if (id) locate({ level, elementId: id });
+        else if (level !== currentLevel) dispatch({ type: 'SET_LEVEL', levelId: level });
+      }} />
       <AreaPalPlan connection={connection} floor={{ id: currentLevel, name: levelNames.get(currentLevel) }}
         busy={busy} canCalculate={reviewed && !!draft?.ruleSource.trim()} canOutline={!outlineUnavailable}
         calculate={() => void run(calculate)} openCheck={openCheck} outline={scope => {

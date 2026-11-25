@@ -162,10 +162,12 @@ export function createModelQaHandler(env: Record<string, string>, fetchModel: ty
       return reply(res, 200, { sessionId, status: describe(cloud) });
     }
 
-    if (path === '/pal/library' || path === '/pal/library/approve') {
+    if (path === '/pal/library' || path === '/pal/library/approve' || path === '/pal/library/import') {
       try {
         if (path === '/pal/library' && req.method === 'GET')
           return reply(res, 200, { tools: await library.list() });
+        if (path === '/pal/library/import' && req.method === 'POST')
+          return reply(res, 200, await library.importCandidates(await readJson(req)));
         if (path === '/pal/library/approve' && req.method === 'POST') {
           const body = await readJson(req) as { toolId?: unknown; reviewed?: unknown } | undefined;
           if (body?.reviewed !== true || typeof body.toolId !== 'string' || body.toolId.length > 160)

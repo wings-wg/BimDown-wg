@@ -15,10 +15,12 @@ internal static class ExportPipeline
     /// Runs the full export pipeline to the specified directory.
     /// Returns the number of exported tables and any errors encountered.
     /// </summary>
-    internal static (int TableCount, List<string> Errors) RunExport(
+    internal static (int TableCount, List<string> Errors, Engineering.EngineeringEvidenceExporter.RoomExportSummary? RoomExport) RunExport(
         Document doc, ExportSettings settings, string outputDir)
     {
         var enabled = settings.EnabledTables;
+        var engineeringRevision = Guid.NewGuid().ToString("N");
+        var sourceRevision = Engineering.EngineeringEvidenceExporter.ReadSourceRevision(doc);
 
         ITableExporter[] allExporters =
         [
@@ -98,13 +100,22 @@ internal static class ExportPipeline
         WriteIdMap(outputDir, idGen);
         // Room feature evidence is independent of mesh export and precedes row mutation by WriteGeometry.
         RunStep("Area feature evidence", errors, () =>
-            Area.AreaFeatureExporter.Write(doc, outputDir, idGen.Mappings, errors));
+            Area.AreaFeatureExporter.Write(doc, outputDir, idGen.Mappings, idGen.GetDirectory, errors));
+        Engineering.EngineeringEvidenceExporter.RoomExportSummary? roomExport = null;
+        RunStep("Engineering evidence", errors, () =>
+            roomExport = Engineering.EngineeringEvidenceExporter.Write(doc, outputDir, engineeringRevision, sourceRevision,
+                exported.SelectMany(table => table.Rows
+                    .Where(row => row.ContainsKey("_engineering_uid"))
+                    .Select(row => new Engineering.ExportObject(
+                        new Engineering.ObjectRef(table.Exporter.IsGlobal ? "global" : GetPartitionDir(row, levelIndex),
+                            table.Exporter.TableName, row["id"]!), row["_engineering_uid"]!, row))),
+                enabled.Contains("space"), enabled.Contains("level")));
         WriteGeometry(outputDir, exported, levelIndex, errors);
-        WriteMetadata(outputDir, doc, errors);
+        WriteMetadata(outputDir, doc, engineeringRevision, errors);
         if (settings.WriteIdsToModel)
             WriteIdsToModel(doc, idGen, errors);
 
-        return (exported.Count, errors);
+        return (exported.Count, errors, roomExport);
     }
 
     static void EnsureParameter(Document doc, List<string> errors)
@@ -146,6 +157,9 @@ internal static class ExportPipeline
             RunStep(exporter.TableName, errors, () =>
             {
                 var rows = exporter.Export(doc);
+                if (exporter.TableName is "level" or "space" or "structure_slab" or "door")
+                    foreach (var row in rows)
+                        if (row.GetValueOrDefault("id") is { Length: > 0 } uid) row["_engineering_uid"] = uid;
                 if (rows.Count > 0)
                     exported.Add((exporter, rows));
             });
@@ -421,7 +435,7 @@ internal static class ExportPipeline
             GeoJsonWriter.WriteAll(outputDir, partitioned, levelData.Rows));
     }
 
-    static void WriteMetadata(string outputDir, Document doc, List<string> errors)
+    static void WriteMetadata(string outputDir, Document doc, string engineeringRevision, List<string> errors)
     {
         RunStep("Metadata", errors, () =>
         {
@@ -430,6 +444,7 @@ internal static class ExportPipeline
                 ["format_version"] = "2",
                 ["project_name"] = doc.Title ?? "",
                 ["units"] = "m",
+                ["engineering_revision"] = engineeringRevision,
                 ["source"] = $"Revit {doc.Application.VersionNumber}"
             };
             var json = System.Text.Json.JsonSerializer.Serialize(metadata,

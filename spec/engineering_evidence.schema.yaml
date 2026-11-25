@@ -1,8 +1,8 @@
 name: engineering_evidence
 description: >
-  Optional engineering_evidence.json at the project root. It carries confirmed
-  measurements and object-specific applicability for registered PAL tools.
-  This is not a geometry table and does not replace BIMDown object files.
+  Optional engineering_evidence.json at the project root. It carries measurements,
+  object-specific applicability and optional unreviewed source observations.
+  BIMDown object and geometry files remain the source of object bindings.
 version: 1
 fields:
   - name: version
@@ -25,6 +25,46 @@ fields:
       source: "measurement or reviewed drawing reference"
       confirmed: "boolean"
       measurementGroup: "same point and vertical datum for operands of a difference"
+  - name: sourceRevision
+    type: object
+    required: false
+    description: Revit source context captured before export transactions. A saved version alone does not identify unsaved content.
+    fields:
+      versionGuid: "Revit DocumentVersion GUID when available"
+      numberOfSaves: "Revit DocumentVersion save counter when available"
+      hadUnsavedChanges: "whether the Revit document was modified before export"
+  - name: planarFrame
+    type: string
+    required: false
+    description: Coordinate frame of automatically exported room geometries, e.g. revit-host-internal-xy.
+  - name: roomExport
+    type: object
+    required: false
+    description: >
+      Coverage audit for the host document. Separates export selection, rooms found and
+      placed, positive area, written rows, level binding and footprints. MEP Spaces and
+      links are counted separately. This does not confirm room use or measurement.
+    fields:
+      status: "disabled, no-host-rooms, no-placed-rooms, no-csv-rows, no-positive-area, missing-level-scope, no-footprints, partial or complete"
+      roomTableRequested: "boolean"
+      levelTableRequested: "boolean"
+      hostRooms: "non-negative count"
+      placedRooms: "non-negative count"
+      roomsWithPositiveArea: "non-negative count"
+      csvRows: "non-negative count"
+      rowsWithLevel: "non-negative count"
+      footprints: "non-negative count"
+      mepSpaces: "non-negative count"
+      linkInstances: "non-negative count"
+  - name: observations
+    type: array
+    required: false
+    description: Unreviewed Revit facts and extraction diagnostics. They never satisfy measurements or rule applicability.
+    items:
+      object: { scope: "exported directory (global for levels)", table: "BIMDown table", id: "table-local object ID" }
+      revitUniqueId: "UniqueId in the source host document"
+      modelFacts: "observed values and source API, specific to the table"
+      reviewRequired: "open confirmations and extraction diagnostics"
   - name: applicability
     type: array
     required: true

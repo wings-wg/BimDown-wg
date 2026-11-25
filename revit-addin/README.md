@@ -106,6 +106,19 @@ dotnet build BimDown.RevitAddin.csproj -p:RevitVersion=2025
 
 Requires the [Nice3point Revit API NuGet packages](https://github.com/Nice3point/RevitApi). Default target is Revit 2026 on .NET 8.
 
+## 工程证据导出
+
+在 Revit 附加模块的 BimDown 导出窗口勾选楼层、房间、结构板和门，正常导出 `.bimdown`。工程证据与网格选项独立。解压后可在根目录查看 `engineering_evidence.json`。每包生成独立的工程版本，和同包 `project_metadata.json` 中的 `engineering_revision` 匹配。每条观测带 BIMDown 的目录、表、短 ID 和 Revit UniqueId。
+
+导出弹窗与证据里的 `roomExport` 会记录宿主建筑房间、已放置房间、正面积房间、CSV 记录、楼层绑定和有效轮廓的数量。未勾选房间、宿主没有建筑房间、房间未放置或没有正面积、缺楼层绑定及轮廓提取失败各有状态。链接实例和机电空间单独计数。模型核查的 **工程证据预检** 会显示该总览。
+
+- **楼层**记录 Revit 标高、项目标高和相邻标高候选。等标高出现多条记录时保留配对待定。
+- **房间**记录名称、编号、部门、Revit 房间面积和未约束高度。有效房间的完成面边界写入所属楼层的 `space.geojson`，保留单外环和内部洞口。坐标为 Revit 宿主模型内部 XY、单位为米。曲边记录为 Revit 折线近似。断开、自交、相触或多个独立外环的房间保留诊断。墙中线、产权套界和净高分析需单独核定。
+- **结构板**记录板型、名义厚度、复合层功能及各型层厚度、结构材质层与可变层索引。实际施工类型、悬挑状态及有效结构层厚度需复核。
+- **门**记录原导出参数中的名义尺寸、类型、开启操作和宿主标识。用途、开启角、测线及考虑门框和五金后的有效净宽需复核。
+
+如需运行模型核查，在同一导出包内按证据契约补充经复核的 `measurements`、`applicability`，以及相应的 `clearHeightAreas`、`doorUses` 或 `spaceRelations`。逐对象保留量测口径和依据。模型重新导出后需复核记录与新版本是否对应。面积分摊的房间归属、受益范围和计入系数继续在项目配置中审核。 [工程证据契约](../spec/engineering_evidence.schema.yaml) · [导出开发清单](../research/BIMDown数据导出待开发.md)
+
 ## Installation
 
 Copy `BimDown.addin` to `%AppData%\Autodesk\Revit\Addins\{version}\` and update the `<Assembly>` path to point to the built DLL.

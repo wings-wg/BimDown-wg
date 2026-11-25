@@ -8,7 +8,7 @@ import { TOOL_PROFILES } from '../check/core/tool-recipes.js';
 import { MAX_CLAUSE_TEXT_LENGTH } from '../check/check-import.js';
 import { compilePalIntent } from './pal-client.js';
 import type { PalIntent } from './pal-intent.js';
-import { editorCommandExamples, isEditorIntent, localEditorIntent, matchEditorLevel,
+import { editorCommandExamples, editorIntentHasGroundedTarget, isEditorIntent, localEditorIntent, matchEditorLevel, resolveDeleteIds,
   type EditorIntent, type WorkspaceCommandRequest, type WorkspacePanel } from './editor-commands.js';
 import { AutomaticRooms } from './AutomaticRooms.tsx';
 import './model-qa.css';
@@ -167,6 +167,21 @@ export function ModelQuestionPanel({ report, areaDraft, onConnectionChange, open
         const name = { area: '面积测算与分摊', check: '模型核查', feedback: '功能建议' } as const;
         return `已打开${name[plan.panel]}。`;
       }
+      case 'editor.delete': {
+        const document = current.document;
+        if (current.readonly || current.groupEdit || !document || document.levelId !== levelAtRequest ||
+            current.currentLevel !== levelAtRequest || current.document !== state.document)
+          return '请在可编辑的当前楼层重新发起删除。';
+        const ids = resolveDeleteIds(plan.target, levelAtRequest, document.elements, current.selectedIds);
+        if (plan.target.startsWith('id:') && ids.length > 1) return '编号对应多个构件，请先在平面选中目标。';
+        if (!ids.length) return '当前楼层没有可匹配的目标。请核对编号、类别或选择。';
+        const sample = ids.slice(0, 8).join('、') + (ids.length > 8 ? ' 等' : '');
+        if (!window.confirm(`确认删除当前楼层的 ${ids.length} 个对象（${sample}）？关联的宿主附属构件也可能被删除，可撤销。`))
+          return '已取消删除。';
+        dispatch({ type: 'SET_PROJECT_SELECTION', levels: null });
+        dispatch({ type: 'DELETE_ELEMENTS', ids });
+        return `已删除 ${ids.length} 个目标，可撤销。`;
+      }
       case 'editor.run-check':
         runWorkspaceCommand({ plan, level: levelAtRequest });
         return '已将运行请求交给模型核查，状态显示在核查面板。';
@@ -193,7 +208,9 @@ export function ModelQuestionPanel({ report, areaDraft, onConnectionChange, open
     setTurn(undefined);
     try {
       let compilation: Awaited<ReturnType<typeof compilePalIntent>> | undefined;
-      if (provider) {
+      const local = localEditorIntent(prompt);
+      if (local?.action === 'editor.delete') result.plan = local;
+      else if (provider) {
         try {
           compilation = await compilePalIntent('question', prompt, sessionId, controller.signal, previousQuestion);
           if (controller.signal.aborted) return;
@@ -203,10 +220,14 @@ export function ModelQuestionPanel({ report, areaDraft, onConnectionChange, open
           if (controller.signal.aborted) return;
           result.error = `PAL 意图识别暂不可用，已转入模型证据查询。 ${error instanceof Error ? error.message : ''}`;
         }
-      } else result.plan = localEditorIntent(prompt);
+      } else result.plan = local;
       const candidate = result.plan;
       if (isEditorIntent(candidate)) {
         if (controller.signal.aborted || activeSource.current !== ds) return;
+        if (candidate.action === 'editor.delete' && !editorIntentHasGroundedTarget(candidate, prompt)) {
+          result.operation = '请明确指定当前楼层的构件编号、类别或已选对象。';
+          return;
+        }
         result.operation = executeEditorCommand(candidate, result.level);
         return;
       }

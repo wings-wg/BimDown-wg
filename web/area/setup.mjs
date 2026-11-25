@@ -26,7 +26,7 @@ for (const file of ['AreaWorkspace.tsx', 'AutomaticRooms.tsx', 'UnitRoomList.tsx
   'area-deletion.ts', 'area-deletion.test.ts', 'project-area-storage.ts', 'project-area-storage.test.ts', 'area.css',
   'ModelQuestionPanel.tsx', 'ModelQuestionSettings.tsx', 'model-qa-evidence.ts', 'model-qa-evidence.test.ts',
   'model-qa-types.ts', 'model-qa.css', 'AreaPalPlan.tsx', 'pal-client.ts', 'pal-intent.ts', 'editor-commands.ts',
-  'DevelopmentFeedback.tsx', 'development-request.mts'])
+  'DevelopmentFeedback.tsx', 'development-request.mts', 'ShanghaiPropertyArea.tsx'])
   copyChanged(join(root, 'web', 'area', file), join(area, file));
 for (const file of ['autoRooms.ts', 'autoRooms.test.ts', 'planDoorAssignment.ts', 'planDoorAssignment.test.ts',
   'unitRoomView.ts', 'unitRoomView.test.ts', 'measurementOutlines.ts', 'measurementOutlines.test.ts', 'modelQaGeometry.ts'])
@@ -39,7 +39,7 @@ for (const file of ['pruneRoomOutlines.ts', 'pruneRoomOutlines.test.ts'])
 for (const file of ['index.ts', 'factor.ts', 'project-input.ts', 'door-assignment.ts'])
   copyChanged(join(root, 'cli', 'src', 'area', file), join(area, 'core', file));
 for (const file of ['ModelCheckPanel.tsx', 'ModelCheckLibrary.tsx', 'RoomClearHeightFields.tsx', 'check-import.ts', 'check-import.test.ts', 'check-model.ts', 'check-xlsx.ts',
-  'pal-plan.ts', 'pal-offline.test.ts', 'pal-offline-fixture.ts', 'tool-evidence.ts', 'door-width.ts', 'space-overlap.ts', 'export-feedback.ts',
+  'pal-plan.ts', 'pal-readiness.ts', 'pal-candidate-package.ts', 'pal-offline.test.ts', 'pal-offline-fixture.ts', 'tool-evidence.ts', 'door-width.ts', 'space-overlap.ts', 'export-feedback.ts', 'report-comparison.ts',
   'storey-height.ts', 'storey-height.test.ts', 'model-check.css'])
   copyChanged(join(root, 'web', 'check', file), join(check, file));
 for (const file of ['index.ts', 'rule-set.ts', 'clear-height.ts', 'decimal.ts', 'tool-recipes.ts'])
@@ -50,6 +50,19 @@ const overlap = readFileSync(join(root, 'cli', 'src', 'engineering', 'overlap.ts
   .replace("'../area/index.js'", "'../../area/core/index.js'");
 const overlapPath = join(check, 'core', 'overlap.ts');
 if (!existsSync(overlapPath) || readFileSync(overlapPath, 'utf8') !== overlap) writeFileSync(overlapPath, overlap);
+copyChanged(join(root, 'cli', 'src', 'utils', 'csv-text.ts'), join(area, 'core', 'csv-text.ts'));
+for (const file of ['room-faces.ts', 'room-ring.ts'])
+  copyChanged(join(root, 'cli', 'src', 'build', file), join(area, 'core', file));
+copyChanged(join(root, 'cli', 'src', 'build', 'room-ring.ts'), join(editor, 'editor', 'src', 'state', 'room-ring.ts'));
+for (const file of ['shanghai-property.ts', 'property-model-evidence.ts', 'property-room-evidence.ts']) {
+  const next = readFileSync(join(root, 'cli', 'src', 'area', file), 'utf8')
+    .replaceAll("'../engineering/", "'../../check/core/")
+    .replaceAll("'../geo/", "'../../check/geo/")
+    .replaceAll("'../build/", "'./")
+    .replace("'../utils/csv-text.js'", "'./csv-text.js'");
+  const dest = join(area, 'core', file);
+  if (!existsSync(dest) || readFileSync(dest, 'utf8') !== next) writeFileSync(dest, next);
+}
 
 const demo = join(root, 'sample_data', 'area-example');
 const roomGeometry = JSON.parse(readFileSync(join(demo, 'model', 'lv-1', 'space.geojson'), 'utf8'));
@@ -376,6 +389,21 @@ edit('editor/src/components/LeftPanel.tsx', [
             dispatch({ type: 'SET_VIEW_MODE', mode: '3d' });
           }}
           onRename=`],
+]);
+edit('editor/src/components/FloatingToolbar.tsx', [
+  ["import { useEditorState, useEditorDispatch } from '../state/EditorContext.tsx';",
+    "import { useEditorState, useEditorDispatch } from '../state/EditorContext.tsx';\nimport { requestDelete } from '../state/selectionOps.ts';\nimport { toElementId, toLevelId } from '../model/ids.ts';"],
+  ['  const canUndo = state.history.undoStack.length > 0;', `  const canDelete = !state.readonly && !state.groupEdit && state.document?.levelId === state.currentLevel &&
+    state.selectedIds.size > 0 && [...state.selectedIds].every(id =>
+      (toLevelId(id) === null || toLevelId(id) === state.currentLevel) && state.document?.elements.has(toElementId(id)));
+  const canUndo = state.history.undoStack.length > 0;`],
+  ['      {/* Undo/Redo */}', `      <button type="button" disabled={!canDelete} onClick={() => requestDelete(state, dispatch)}
+        className="flex min-w-11 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-lg border-none bg-transparent px-0.5 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-50">
+        <span aria-hidden="true" className="text-base leading-none">⌫</span>
+        <span className="whitespace-nowrap text-[9px] leading-none">{t('ctx.delete')}</span>
+      </button>
+
+      {/* Undo/Redo */}`],
 ]);
 edit('editor/src/exports.ts', [
   ["import './elements/registerAll.ts';", "import './elements/registerAll.ts';\nexport { parseCsv } from './utils/loader.ts';"],

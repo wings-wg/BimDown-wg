@@ -91,7 +91,7 @@ public class SampleProjectExportTests : RevitApiTest
             Confirmed = true,
         };
 
-        var (_, errors) = ExportPipeline.RunExport(doc, settings, outputDir);
+        var (_, errors, _) = ExportPipeline.RunExport(doc, settings, outputDir);
 
         if (errors.Count > 0)
             throw new Exception(

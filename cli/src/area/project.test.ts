@@ -48,4 +48,21 @@ describe('BIMDown area adapter', () => {
       expect(() => calculateProjectAreas(dir, config())).toThrow(/Indeterminate/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  it('binds Revit room evidence by level when both levels reuse a short ID', () => {
+    const input = config();
+    input.selections.push({ ...input.selections[0], id: 'upper', level: 'lv-2' });
+    const entries = new Map(Object.entries(files()));
+    entries.set('lv-2/space.geojson', entries.get('lv-1/space.geojson')!);
+    entries.set('area_features.json', JSON.stringify({ rooms: [
+      { id: 'sp1', scope: 'lv-2', covered: true, enclosed: true, uuid: 'upper-room' },
+      { id: 'sp1', scope: 'lv-1', covered: true, enclosed: true, uuid: 'lower-room' },
+    ] }));
+    const report = calculateProjectAreasFromText(path => entries.get(path), input);
+    expect(report.modelSources.map(source => source.featureEvidence.uuid)).toEqual(['lower-room', 'upper-room']);
+    entries.set('area_features.json', JSON.stringify({ rooms: [
+      { id: 'sp1', scope: 'lv-2', covered: true, enclosed: true },
+    ] }));
+    expect(() => calculateProjectAreasFromText(path => entries.get(path), input)).toThrow(/Indeterminate/);
+  });
 });

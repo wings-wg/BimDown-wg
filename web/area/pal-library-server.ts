@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { parseToolRecipe, toolId, verifyToolRecipe, type ToolEntry, type ToolRecipe } from './src/check/core/tool-recipes.ts';
+import { verifyCandidatePackage } from './src/check/pal-candidate-package.ts';
 
 const toolLimit = 20;
 
@@ -41,20 +42,35 @@ export function createPalLibrary(file?: string) {
     return next;
   }
 
-  async function save(tool: ToolEntry) {
-    const next = new Map(tools).set(tool.id, tool);
+  async function saveAll(next: Map<string, ToolEntry>) {
     if (file) {
       await mkdir(dirname(file), { recursive: true });
       const staging = `${file}.tmp`;
       await writeFile(staging, JSON.stringify({ version: 1, tools: [...next.values()] }, null, 2) + '\n', 'utf8');
       await rename(staging, file);
     }
-    tools.set(tool.id, tool);
+    for (const [id, tool] of next) tools.set(id, tool);
+  }
+
+  async function save(tool: ToolEntry) {
+    await saveAll(new Map(tools).set(tool.id, tool));
     return tool;
   }
 
   return {
     list: () => inOrder(async () => [...tools.values()]),
+    importCandidates: (input: unknown) => inOrder(async () => {
+      const { origin, plans } = verifyCandidatePackage(input, [...tools.values()]);
+      const next = new Map(tools);
+      for (const { id: clauseId, plan, checks } of plans) {
+        if (!('recipe' in plan) || next.has(plan.toolId)) continue;
+        next.set(plan.toolId, { id: plan.toolId, version: 1, recipe: plan.recipe, origin: { model: origin, clauseId },
+          status: 'draft', createdAt: new Date().toISOString(), verification: checks });
+      }
+      if (next.size > toolLimit) throw new Error('工具库容量已满。');
+      if (next.size !== tools.size) await saveAll(next);
+      return { tools: [...tools.values()], plans };
+    }),
     draft: (input: ToolRecipe, origin: ToolEntry['origin']) => inOrder(async () => {
       const recipe = parseToolRecipe(input);
       if (!recipe) throw new Error('候选工具超出已注册的测量和运算范围。');

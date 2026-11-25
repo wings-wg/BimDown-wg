@@ -8,6 +8,7 @@ import { objectId, parseEvidence, readToolEvidence, TOOL_EVIDENCE_PATH } from '.
 import { DOOR_WIDTH } from './door-width.js';
 import { checkSpaceOverlap } from './space-overlap.js';
 import { TOOL_PROFILES, executeToolRecipe } from './core/tool-recipes.js';
+import { diagnosePalResults } from './pal-readiness.js';
 
 type Reader = Pick<DataSource, 'fetchText'>;
 type Target = ScalarEvidenceSet['targets'][number];
@@ -87,8 +88,7 @@ export async function runModelCheck(
     throw new Error('模型标高或单位已变化，请重新确认层高。');
   const levelIndex = new Map(levels.map(level => [level.id, level]));
   const inventory = roomRules.length || clearHeightRules.length || overlapRules.length ? await readCheckRooms(ds, levels) : undefined;
-  const needsRoomEvidence = clearHeightRules.length || overlapRules.length;
-  const evidenceText = toolItems.length || needsRoomEvidence ? await ds.fetchText(TOOL_EVIDENCE_PATH) : null;
+  const evidenceText = await ds.fetchText(TOOL_EVIDENCE_PATH);
   const toolEvidence = toolItems.length ? await readToolEvidence(ds, levels, toolItems, raw[0], evidenceText) : undefined;
   if (clearHeightRules.length && clearHeightInput && clearHeightInput.snapshot !== inventory?.snapshot)
     throw new Error('模型的房间清单或轮廓已变化，请重新核对净高证据。');
@@ -139,16 +139,15 @@ export async function runModelCheck(
     }
   }
 
-  const bytes = new TextEncoder().encode(JSON.stringify([raw, inventory?.snapshot, toolEvidence?.snapshot,
-    ...(needsRoomEvidence && evidenceText !== null ? [evidenceText] : [])]));
+  const bytes = new TextEncoder().encode(JSON.stringify([raw, inventory?.snapshot, toolEvidence?.snapshot, evidenceText]));
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   const modelVersion = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
   const result = rules.length ? runScalarRuleSet({ rules }, { modelVersion, targets })
     : { version: 1, modelVersion, results: [] };
-  const projectRevision = needsRoomEvidence && raw[0] ? JSON.parse(raw[0]).engineering_revision : undefined;
+  const projectRevision = raw[0] ? JSON.parse(raw[0]).engineering_revision : undefined;
   let sidecar: ReturnType<typeof parseEvidence> | undefined;
   let sidecarError: string | undefined;
-  if (clearHeightRules.length && evidenceText) {
+  if (evidenceText) {
     try { sidecar = parseEvidence(evidenceText, projectRevision); }
     catch (error) { sidecarError = error instanceof Error ? error.message : '工程证据文件无法读取。'; }
   }
@@ -226,8 +225,31 @@ export async function runModelCheck(
   }).flat() ?? [];
   const overlapResults = overlapRules.map(rule =>
     checkSpaceOverlap(rule, inventory!, evidenceText, projectRevision, modelVersion, unit)).flat();
-  const results = [...scalarResults, ...clearHeightResults, ...toolResults, ...overlapResults];
-  return { ...result, unit, results, exportFeedback: buildExportFeedback(items, results),
+  const roomOutlines = new Set(inventory?.data.flatMap(({ level, byId }) =>
+    [...byId].filter(([, room]) => room.features.length === 1 && room.features[0].geometry?.type === 'Polygon' &&
+      room.features[0].properties?.redundant !== true)
+      .map(([id]) => objectId({ scope: level.id, table: 'space', id }))));
+  const results = diagnosePalResults(items, [...scalarResults, ...clearHeightResults, ...toolResults, ...overlapResults], {
+    levels, scale, evidence: sidecar, evidenceError: sidecarError, roomOutlines, manualRoomEntries: clearHeightInput?.entries,
+  });
+  const observedByTable: Record<string, number> = Object.create(null);
+  for (const { object } of sidecar?.observations.values() ?? [])
+    observedByTable[object.table] = (observedByTable[object.table] ?? 0) + 1;
+  const executed = new Set(results.map(row => row.ruleId));
+  return { ...result, unit, results, clauseTrace: items.map(item => ({
+    id: item.id, title: item.title, source: item.source, clause: item.clause, plan: item.plan,
+    rule: item.rule ?? item.clearHeightRule ?? item.doorWidthRule ?? item.overlapRule,
+    toolId: item.libraryTool?.id, toolVersion: item.libraryTool?.version,
+    status: executed.has(item.id) ? 'executed' as const : 'pending' as const, reason: item.reason,
+  })), evidenceInventory: {
+    revision: typeof projectRevision === 'string' ? projectRevision : undefined,
+    status: sidecarError ? 'invalid' as const : sidecar ? 'loaded' as const : 'missing' as const,
+    error: sidecarError, observedByTable,
+    confirmedMeasurements: [...(sidecar?.facts.values() ?? [])].reduce((sum, facts) => sum + [...facts.values()]
+      .filter(fact => fact.confirmed && !sidecar?.duplicate.has(JSON.stringify([objectId(fact.object), fact.concept]))).length, 0),
+    applicabilityRecords: sidecar?.applicability.size ?? 0,
+    roomExport: sidecar?.roomExport,
+  }, exportFeedback: buildExportFeedback(items, results),
     pending: items.filter(item => !item.rule && !item.clearHeightRule && !item.doorWidthRule && !item.overlapRule)
       .map(item => ({ ...item, status: 'indeterminate' as const })) };
 }

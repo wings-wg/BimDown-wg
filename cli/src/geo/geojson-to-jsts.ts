@@ -18,6 +18,7 @@ export interface JstsGeometry {
   };
   getNumGeometries(): number;
   getGeometryN(i: number): JstsGeometry;
+  getArea(): number;
   getExteriorRing(): JstsGeometry;
   intersection(other: JstsGeometry): JstsGeometry;
   union(other: JstsGeometry): JstsGeometry;

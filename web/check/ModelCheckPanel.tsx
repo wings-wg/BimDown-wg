@@ -11,11 +11,16 @@ import { RoomClearHeightFields } from './RoomClearHeightFields.tsx';
 import { ModelCheckLibrary } from './ModelCheckLibrary.tsx';
 import { TOOL_PROFILES, type ToolEntry } from './core/tool-recipes.js';
 import { doorUses, type DoorUse } from './door-width.js';
-import type { DoorUseEvidence } from './tool-evidence.js';
+import { roomExportLabels, type DoorUseEvidence } from './tool-evidence.js';
+import { blockerLabels } from './pal-readiness.js';
+import { candidateLimit, readCandidatePackage } from './pal-candidate-package.js';
+import type { PalResult } from './pal-plan.js';
+import { compareModelCheckReports, readComparisonBaseline, type ComparisonBaseline } from './report-comparison.js';
 import type { WorkspaceCommandRequest } from '../area/editor-commands.js';
 import './model-check.css';
 
 const labels = { fail: '不通过', pass: '通过', indeterminate: '无法判断', 'not-applicable': '不适用' } as const;
+const observationTables = { level: '标高', space: '房间', door: '门', structure_slab: '结构板' } as const;
 const ordering = ['fail', 'indeterminate', 'pass', 'not-applicable'] as const;
 type Status = keyof typeof labels;
 type Report = Awaited<ReturnType<typeof runModelCheck>>;
@@ -60,6 +65,10 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
   const [roomInventory, setRoomInventory] = useState<Awaited<ReturnType<typeof readCheckRooms>>>();
   const [reviewed, setReviewed] = useState(false);
   const [report, setReport] = useState<Report>();
+  const [baseline, setBaseline] = useState<ComparisonBaseline>();
+  const [ruleFilter, setRuleFilter] = useState('');
+  const [importingCandidates, setImportingCandidates] = useState(false);
+  const [candidateMessage, setCandidateMessage] = useState<{ ok: boolean; text: string }>();
   const [filter, setFilter] = useState<Status | 'all' | 'pending'>('all');
   const [busy, setBusy] = useState(false);
   const [reading, setReading] = useState(false);
@@ -120,6 +129,9 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
       levelSnapshot.current = undefined;
       setReviewed(false);
       setReport(undefined);
+      setBaseline(undefined);
+      setRuleFilter('');
+      setCandidateMessage(undefined);
       setFocus(undefined);
       setBusy(false);
       setReading(false);
@@ -223,6 +235,9 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
     runRequest.current++;
     setInput(undefined);
     setReport(undefined);
+    setBaseline(undefined);
+    setRuleFilter('');
+    setCandidateMessage(undefined);
     setFocus(undefined);
     setNotice('');
     setCommandNotice('');
@@ -261,7 +276,7 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
   }
 
   async function loadText() {
-    if (!configuredModel || reading || compileRequest.current || busy) return;
+    if (!configuredModel || reading || importingCandidates || compileRequest.current || busy) return;
     const id = startInput();
     try {
       const item = await importTextRule(textDraft);
@@ -279,7 +294,7 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
 
   async function compile(source = input) {
     const clausesToCompile = source?.items.flatMap(item => item.clause && !item.plan ? [item.clause] : []) ?? [];
-    if (!configuredModel || !clausesToCompile.length || compileRequest.current) return;
+    if (!configuredModel || !clausesToCompile.length || importingCandidates || compileRequest.current) return;
     const controller = new AbortController();
     compileRequest.current = controller;
     const upload = fileRequest.current;
@@ -328,12 +343,65 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
         (item.plan?.kind === 'tool-draft' || item.plan?.kind === 'door-clear-width-by-use') &&
         item.plan.toolId === tool.id ? bindPalPlan(item, item.plan, [tool]) : item) });
       setReviewed(false);
-      invalidateReport();
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   }
 
-  async function run(confirmed = reviewed) {
-    if (!input || !levelData || compileProgress || (needsReview && !confirmed) || (hasClearHeight && !roomInventory)) return;
+  function downloadCandidateTemplate() {
+    const entries = (input?.items ?? []).filter(item => item.clause && (!item.plan || item.plan.kind === 'blocked'))
+      .slice(0, candidateLimit).map(({ clause, source, id }) => ({ clause, source, proposal: { id, kind: '' }, verification: [] }));
+    if (entries.length) saveJson({ version: 1, origin: 'Codex', entries }, 'pal-candidate-template.json');
+  }
+
+  async function importCandidates(file: File) {
+    if (!input || importingCandidates || reading || busy || compileRequest.current) return;
+    const inputId = fileRequest.current;
+    setImportingCandidates(true);
+    setCandidateMessage(undefined);
+    try {
+      if (file.size > 64 * 1024) throw new Error('候选包不能超过 64 KB，请分批导入。');
+      const data = readCandidatePackage(JSON.parse(await file.text()), input.items);
+      if (inputId !== fileRequest.current) return;
+      const response = await fetch(`${MODEL_PAL_LIBRARY_PATH}/import`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+      const payload = await response.json() as { tools?: ToolEntry[]; plans?: PalResult[]; error?: string };
+      if (!response.ok || !payload.tools || !payload.plans) throw new Error(payload.error ?? '候选包未能导入。');
+      const tools = payload.tools;
+      setLibrary(tools);
+      if (inputId !== fileRequest.current) return;
+      const plans = new Map(payload.plans.map(result => [result.id, result.plan]));
+      const items = input.items.map(item => {
+        const plan = plans.get(item.id);
+        return plan && (!item.plan || item.plan.kind === 'blocked') ? bindPalPlan(item, plan, tools) : item;
+      });
+      const applied = items.filter((item, i) => item !== input.items[i]);
+      if (applied.length) {
+        setInput({ ...input, items, models: [...new Set([...(input.models ?? []), data.origin])] });
+        setReviewed(false);
+      }
+      setCandidateMessage({ ok: true, text: `验证通过 ${payload.plans.length} 条，补入 ${applied.length} 条待处理方案。工具库已刷新，已有报告可继续查看。` });
+    } catch (reason) {
+      if (inputId === fileRequest.current)
+        setCandidateMessage({ ok: false, text: `候选验证失败 · ${reason instanceof Error ? reason.message : String(reason)}` });
+    } finally { setImportingCandidates(false); }
+  }
+
+  async function importBaseline(file: File) {
+    if (!input) return;
+    const inputId = fileRequest.current;
+    try {
+      if (file.size > 25 * 1024 * 1024) throw new Error('复跑基线文件不能超过 25 MB。');
+      const value = readComparisonBaseline(JSON.parse(await file.text()), input.items);
+      if (inputId === fileRequest.current) { setBaseline(value); setError(''); }
+    } catch (reason) {
+      if (inputId === fileRequest.current) setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function run(confirmed = reviewed, ruleIds?: readonly string[]) {
+    if (!input || !levelData || compileProgress || importingCandidates || (needsReview && !confirmed) || (hasClearHeight && !roomInventory)) return;
+    const requested = ruleIds ? new Set(ruleIds) : undefined;
+    const items = requested ? activeItems.filter(item => requested.has(item.id)) : activeItems;
+    if (!items.length) return;
     const id = ++runRequest.current;
     setReport(undefined);
     setNotice('');
@@ -341,10 +409,11 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
     setError('');
     setBusy(true);
     try {
-      const result = await runModelCheck(ds, activeItems, new Map([...suggestions, ...storeyEdits]), levelData.raw,
+      const result = await runModelCheck(ds, items, new Map([...suggestions, ...storeyEdits]), levelData.raw,
         roomInventory && { snapshot: roomInventory.snapshot, entries: clearHeightEntries });
       if (id === runRequest.current) {
         setFilter('all');
+        setRuleFilter('');
         setReport(result);
       }
     } catch (reason) {
@@ -358,13 +427,13 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
   useEffect(() => {
     if (!open || !command || handledCommand.current === command) return;
     handledCommand.current = command;
-    if (busy || compileProgress || reading) setCommandNotice('当前仍在读取、编译或核查，请完成后再运行。');
+    if (busy || compileProgress || reading || importingCandidates) setCommandNotice('当前仍在读取、编译或核查，请完成后再运行。');
     else if (!input) setCommandNotice('请先上传核查条款文件。');
     else if (!needsReview) setCommandNotice('当前没有可执行条款，请先编译条款或启用所需工具。');
     else if (!reviewed) setCommandNotice('请先核对来源、限值和适用性，再运行已就绪条款。');
     else if (!levelData || (hasClearHeight && !roomInventory)) setCommandNotice('模型证据正在读取，请稍后重试。');
     else void run();
-  }, [open, command, busy, compileProgress, reading, input, needsReview, reviewed, levelData, hasClearHeight, roomInventory, run]);
+  }, [open, command, busy, compileProgress, reading, importingCandidates, input, needsReview, reviewed, levelData, hasClearHeight, roomInventory, run]);
 
   useEffect(() => { if (report) resultsHeading.current?.focus(); }, [report]);
 
@@ -388,8 +457,10 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
       return;
     }
     if (state.viewMode !== '2d') dispatch({ type: 'SET_VIEW_MODE', mode: '2d' });
-    if (object.table === 'space' && state.activeDiscipline !== 'all' && state.activeDiscipline !== 'architecture')
-      dispatch({ type: 'SET_DISCIPLINE', discipline: 'architecture' });
+    const discipline = object.table === 'structure_slab' ? 'structure'
+      : object.table === 'space' || object.table === 'door' ? 'architecture' : undefined;
+    if (discipline && state.activeDiscipline !== 'all' && state.activeDiscipline !== discipline)
+      dispatch({ type: 'SET_DISCIPLINE', discipline });
     if (state.currentLevel !== level) dispatch({ type: 'SET_LEVEL', levelId: level });
     if (object.table !== 'level') {
       setFocus({ level, id: object.id, table: object.table });
@@ -402,7 +473,10 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
 
   function download() {
     if (!report || !input) return;
-    saveJson({ ...report, ruleFile: input.fileName,
+    saveJson({ ...report, ruleFile: input.fileName, viewFilter: { status: filter, ruleId: ruleFilter || null },
+      ...(comparison && { comparison }),
+      workbook: input.items.map(item => ({ id: item.id, source: item.source, clause: item.clause, plan: item.plan,
+        status: report.clauseTrace.find(entry => entry.id === item.id)?.status ?? 'not-run' })),
       ...(input.needsCompile && { pal: { models: input.models ?? [], plans: input.items.flatMap(item => item.plan
         ? [{ id: item.id, locator: item.source.locator,
           reviewed: reviewed && !excludedRules.has(item.id) && !!(item.rule || item.clearHeightRule || item.doorWidthRule || item.overlapRule),
@@ -421,13 +495,36 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
   }
 
   const ready = input?.items.filter(item => item.rule || item.clearHeightRule || item.doorWidthRule || item.overlapRule) ?? [];
+  const activeReady = ready.filter(item => !excludedRules.has(item.id));
+  const comparison = useMemo(() => report && baseline && report !== baseline
+    ? compareModelCheckReports(baseline, report) : undefined, [report, baseline]);
+  const compiled = input?.items.filter(item => item.plan ? item.plan.kind !== 'blocked' :
+    item.rule || item.clearHeightRule || item.doorWidthRule || item.overlapRule).length ?? 0;
+  const affectedRules = baseline?.exportFeedback.map(item => item.ruleId)
+    .filter(id => activeReady.some(item => item.id === id)) ?? [];
+  const reportRules = report?.clauseTrace ?? [];
+  const displayedResults = report?.results.filter(row => !ruleFilter || row.ruleId === ruleFilter) ?? [];
+  const displayedPending = report?.pending.filter(row => !ruleFilter || row.id === ruleFilter) ?? [];
   const levels = levelData?.levels ?? [];
   const counts = Object.fromEntries(ordering.map(status => [status,
-    report?.results.filter(result => result.status === status).length ?? 0]));
+    displayedResults.filter(result => result.status === status).length]));
 
   return <aside className="area-panel model-check-panel" id="model-check-panel" aria-labelledby="model-check-title" hidden={!open}>
     <div className="model-check-head"><h2 id="model-check-title">模型核查</h2><button type="button" onClick={close}>关闭</button></div>
-    <ModelCheckLibrary tools={library} disabled={!!compileProgress || busy} approve={approveTool} />
+    <ModelCheckLibrary tools={library} disabled={!!compileProgress || busy || importingCandidates} approve={approveTool} />
+    {input?.items.some(item => item.clause) && <details>
+      <summary>导入 Codex 候选包</summary>
+      <button type="button" onClick={downloadCandidateTemplate}
+        disabled={importingCandidates || !input.items.some(item => item.clause && (!item.plan || item.plan.kind === 'blocked'))}>下载待处理条款模板</button>
+      <label>候选包 JSON <input type="file" accept=".json" disabled={importingCandidates || reading || busy || !!compileProgress}
+        onChange={event => {
+          const file = event.currentTarget.files?.[0];
+          event.currentTarget.value = '';
+          if (file) void importCandidates(file);
+        }} /></label>
+      {importingCandidates && <small role="status">正在验证候选包…</small>}
+      {candidateMessage && <small role={candidateMessage.ok ? 'status' : 'alert'}>{candidateMessage.text}</small>}
+    </details>}
     <label>上传核查条款文件
       <input type="file" accept=".xlsx,.json" onChange={event => {
         const file = event.currentTarget.files?.[0];
@@ -445,19 +542,37 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
         {configuredModel ? <small>编译时向 {configuredModel.host} 发送条款原文，编译结果将替换当前条款列表。</small>
           : <small>请先在页面底部配置 PAL 语言模型。</small>}
         <p><button type="submit" disabled={!configuredModel || !textDraft.trim() || textDraft.length > MAX_CLAUSE_TEXT_LENGTH ||
-          reading || busy || !!compileProgress}>编译文本条款</button></p>
+          reading || busy || importingCandidates || !!compileProgress}>编译文本条款</button></p>
       </form>
     </details>
     {reading && <p role="status">正在读取条款文件…</p>}
     {commandNotice && <p role="status">{commandNotice}</p>}
     {error && <p className="area-error" role="alert">{error}</p>}
     {input && <>
-      <p className="model-check-file">{input.fileName}<br /><small>{input.items.length} 条条款 · {ready.length} 条已具备规则和工具
-        {input.needsCompile && ` · ${pendingClauses.length} 条待 PAL 编译`}</small></p>
+      <p className="model-check-file">{input.fileName}<br /><small>
+        原表 {input.items.length} 条 · 已编译 {compiled} 条 · 待审核 {reviewed ? 0 : activeReady.length} 条 ·
+        已执行 {reportRules.filter(row => row.status === 'executed').length} 条 · 待处理 {input.items.length - activeReady.length} 条
+      </small></p>
+      <details>
+        <summary>条款追踪（{input.items.length}）</summary>
+        <ul className="model-check-list">{input.items.map(item => {
+          const ready = activeReady.some(rule => rule.id === item.id);
+          const wasExecuted = reportRules.some(rule => rule.id === item.id && rule.status === 'executed');
+          return <li key={item.id}>
+            <strong>{item.id} · {item.title}</strong>
+            <small>{wasExecuted ? '本报告已执行' : ready ? reviewed ? '已审核待执行' : '待审核' : item.reason ?? '待处理'}
+              {item.plan && ` · ${item.plan.kind}`}</small>
+            <small>{item.source.document} · {item.source.locator} · {item.source.text}</small>
+            {wasExecuted && <button type="button" onClick={() => { setRuleFilter(item.id); setFilter('all'); resultsHeading.current?.focus(); }}>
+              查看条款结果
+            </button>}
+          </li>;
+        })}</ul>
+      </details>
       {input.needsCompile && <div className="model-check-levels">
         {configuredModel ? <small>PAL 将待编译的条款文本发送至 {configuredModel.host}（{configuredModel.model}）。</small>
           : <small>请先在页面底部的「模型设置」配置语言模型。已审核 JSON 规则包可直接核查。</small>}
-        {pendingClauses.length > 0 && <p><button type="button" disabled={!configuredModel || !!compileProgress}
+        {pendingClauses.length > 0 && <p><button type="button" disabled={!configuredModel || importingCandidates || !!compileProgress}
           onClick={() => void compile()}>PAL 编译 {pendingClauses.length} 条条款</button></p>}
         {compileProgress && <p><span role="status">PAL 正在编译 {compileProgress.done} / {compileProgress.total} 条</span>
           {' '}<button type="button" onClick={() => compileRequest.current?.abort()}>停止编译</button></p>}
@@ -544,12 +659,12 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
           invalidateReport();
         }} />}
       {needsReview && <label className="area-review"><input type="checkbox" checked={reviewed}
-        disabled={!!compileProgress || !levelData || (hasClearHeight && !roomInventory)}
+        disabled={!!compileProgress || importingCandidates || !levelData || (hasClearHeight && !roomInventory)}
         onChange={event => {
           const confirmed = event.target.checked;
           setReviewed(confirmed);
           invalidateReport();
-          if (confirmed && input.needsCompile) void run(true);
+          if (confirmed && input.needsCompile && !baseline) void run(true);
         }} />
         <span>我已核对可执行条款的来源、限值和项目适用性。
           {hasHeight && '我确认当前各层层高的建筑标高配对、手工依据和适用范围。'}
@@ -557,32 +672,82 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
           {hasRoomArea && '我确认各净面积条款适用于模型全部房间，且采用模型记载净面积口径。'}
           {hasLibraryRules && '工具库规则按证据文件中的逐对象适用性执行。'}
           {hasOverlap && '已核对跨层配对、室内用途和投影轮廓的适用性。'}
-          {input.needsCompile && '确认后自动运行核查。'}</span></label>}
+          {input.needsCompile && !baseline && '确认后自动运行核查。'}</span></label>}
       <button type="button" className="area-primary" onClick={() => void run()}
-        disabled={busy || !!compileProgress || (needsReview && !reviewed) || !levelData || (hasClearHeight && !roomInventory)}>
+        disabled={busy || importingCandidates || !!compileProgress || (needsReview && !reviewed) || !levelData || (hasClearHeight && !roomInventory)}>
         {busy ? '正在核查…' : needsReview ? '运行已就绪条款' : '查看待处理条款'}
       </button>
       {input.needsCompile && reviewed && needsReview && <p><button type="button" onClick={downloadReviewedRules}>
         下载已审核规则包
       </button></p>}
+      <label>读取复跑基线 <input type="file" accept=".json" disabled={busy || importingCandidates} onChange={event => {
+        const file = event.currentTarget.files?.[0];
+        event.currentTarget.value = '';
+        if (file) void importBaseline(file);
+      }} /></label>
+      {baseline && <fieldset className="model-check-levels">
+        <legend>补证据与复跑</legend>
+        <small>已保存基线。模型快照 {baseline.modelVersion.slice(0, 12)}{baseline.evidenceInventory.revision &&
+          ` · 工程版本 ${baseline.evidenceInventory.revision}`}。更新项目文件后刷新证据并复核条款。</small>
+        <div>
+          <button type="button" disabled={busy} onClick={() => setRevision(value => value + 1)}>刷新模型证据</button>{' '}
+          <button type="button" disabled={!reviewed || !levelData || !affectedRules.length || busy || importingCandidates ||
+            !!compileProgress || (hasClearHeight && !roomInventory)}
+            onClick={() => void run(reviewed, affectedRules)}>复跑受影响条款（{affectedRules.length}）</button>{' '}
+          <button type="button" onClick={() => saveJson(baseline, 'model-check-baseline.json')}>下载基线</button>
+        </div>
+      </fieldset>}
     </>}
     {report && <section className="model-check-results" aria-label="核查结果">
       <h3 ref={resultsHeading} tabIndex={-1}>核查结果</h3>
-      <p>已执行 {new Set(report.results.map(row => row.ruleId)).size} 条条款，产生 {report.results.length} 个对象结果。另有 {report.pending.length} 条待处理。</p>
+      <p>已评估 {new Set(report.results.map(row => row.ruleId)).size} 条条款，
+        产生 {report.results.filter(row => row.object).length} 个对象结果。
+        {report.results.some(row => !row.object) && `另有 ${report.results.filter(row => !row.object).length} 条缺少核查对象。`}
+        {report.pending.length > 0 && ` ${report.pending.length} 条待处理。`}</p>
+      <details open>
+        <summary>工程证据预检</summary>
+        {report.evidenceInventory.status === 'loaded' ? <p>
+          {Object.entries(observationTables).map(([table, label]) => `${label} ${report.evidenceInventory.observedByTable[table] ?? 0} 条观测`).join(' · ')}
+          。已确认量测 {report.evidenceInventory.confirmedMeasurements} 条，规则适用性记录 {report.evidenceInventory.applicabilityRecords} 条。
+        </p> : <p>{report.evidenceInventory.error ?? '项目缺少 engineering_evidence.json。'}</p>}
+        {report.evidenceInventory.roomExport && <p>
+          {roomExportLabels[report.evidenceInventory.roomExport.status]}。宿主房间 {report.evidenceInventory.roomExport.hostRooms}，
+          已放置 {report.evidenceInventory.roomExport.placedRooms}，导出记录 {report.evidenceInventory.roomExport.csvRows}，
+          轮廓 {report.evidenceInventory.roomExport.footprints}。机电空间 {report.evidenceInventory.roomExport.mepSpaces}，
+          链接实例 {report.evidenceInventory.roomExport.linkInstances}。
+        </p>}
+      </details>
       <div className="model-check-summary" aria-label="按结果筛选">
         <button type="button" aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>全部</button>
         {ordering.map(status => <button key={status} type="button" aria-pressed={filter === status}
           onClick={() => setFilter(status)}>{labels[status]} {counts[status]}</button>)}
-        {report.pending.length > 0 && <button type="button" aria-pressed={filter === 'pending'}
-          onClick={() => setFilter('pending')}>待处理条款 {report.pending.length}</button>}
+        {displayedPending.length > 0 && <button type="button" aria-pressed={filter === 'pending'}
+          onClick={() => setFilter('pending')}>待处理条款 {displayedPending.length}</button>}
       </div>
+      <label>仅看条款 <select value={ruleFilter} onChange={event => { setRuleFilter(event.target.value); setFilter('all'); }}>
+        <option value="">全部条款</option>
+        {reportRules.map(rule => <option key={rule.id} value={rule.id}>{rule.id} · {rule.title}</option>)}
+      </select></label>
+      {comparison && <details open>
+        <summary>复跑对比 · {comparison.changes.length} 项状态变化</summary>
+        <small>模型快照 {comparison.beforeModelVersion.slice(0, 12)} → {comparison.afterModelVersion.slice(0, 12)} ·
+          复跑条款 {comparison.rules.join('、')}</small>
+        <ul className="model-check-list">{comparison.changes.map(change => <li
+          key={JSON.stringify([change.ruleId, change.ruleVersion, change.object])}>
+          <small>{change.ruleId} · {change.object ? `${change.object.scope}/${change.object.table}/${change.object.id}` : '条款级'}
+            {' · '}{change.before ? labels[change.before] : '无原结果'} → {change.after ? labels[change.after] : '无本次结果'}</small>
+        </li>)}</ul>
+      </details>}
       {notice && <p role="status">{notice}</p>}
       <ul className="model-check-list">
         {ordering.filter(status => filter === 'all' || filter === status).flatMap(status =>
-          report.results.filter(row => row.status === status).map(row => {
+          displayedResults.filter(row => row.status === status).map(row => {
             const evidence = 'evidence' in row ? row.evidence : undefined;
             const clearHeightEvidence = 'clearHeightEvidence' in row ? row.clearHeightEvidence : undefined;
             const doorUse = 'doorUse' in row ? row.doorUse as DoorUseEvidence | undefined : undefined;
+            const evidenceFiles = row.object && status === 'indeterminate'
+              ? report.exportFeedback.find(item => item.ruleId === row.ruleId)?.files.map(path => path.replace('<楼层>', row.object!.scope))
+              : undefined;
             return <li key={JSON.stringify([row.ruleId, row.object])} className={status === 'fail' ? 'model-check-fail' : undefined}>
               <strong>{labels[status]} · {row.ruleId}</strong>
               {row.name && <span>{row.name}</span>}
@@ -592,6 +757,12 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
                 低于 {clearHeightEvidence.belowHeight} m 的面积 {measurement.format(clearHeightEvidence.lowArea)} m² /
                 {' '}{measurement.format(clearHeightEvidence.usableArea)} m²（{percent.format(clearHeightEvidence.ratio)}）</small>}
               {'reason' in row && row.reason && <small>{row.reason}</small>}
+              {row.diagnosis && <small>{row.diagnosis.blockers.map(kind => blockerLabels[kind]).join('、')}</small>}
+              {!!evidenceFiles?.length && <small>补证据文件 {evidenceFiles.join('、')}</small>}
+              {row.diagnosis?.candidate && <small>
+                {row.diagnosis.candidate.label} {measurement.format(row.diagnosis.candidate.value)} {row.diagnosis.candidate.unit}
+                {' · 待复核 · '}{row.diagnosis.candidate.source}
+              </small>}
               {'libraryToolId' in row && typeof row.libraryToolId === 'string' && <small>工具 {row.libraryToolId}</small>}
               {doorUse && <small>{doorUses[doorUse.use]} · 开启角 {doorUse.openingAngleDeg}° ·
                 {doorUse.measurementLine} · {doorUse.source}</small>}
@@ -602,15 +773,15 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
                 : 'diagnostic' in row && row.diagnostic.status === 'clarification-required'
                   ? '该对象的适用性待确认。' : '缺少符合规则口径的测量证据。'}</small>}
               <small>{row.source.locator}{evidence && ` · ${evidence.dataSource}`}{clearHeightEvidence && ` · ${clearHeightEvidence.source}`}</small>
-              {status === 'fail' && row.object && <button type="button" onClick={() => locate(row.object!)}>
+              {row.object && <button type="button" onClick={() => locate(row.object!)}>
                 {row.object.table === 'level' ? '定位楼层' : row.object.table === 'space' ? '定位房间' : '定位构件'}
               </button>}
             </li>;
           }))}
       </ul>
-      {(filter === 'all' || filter === 'pending') && report.pending.length > 0 && <details open>
-        <summary>待处理条款（{report.pending.length}）</summary>
-        <ul className="model-check-list">{report.pending.map(item => <li key={item.id}>
+      {(filter === 'all' || filter === 'pending') && displayedPending.length > 0 && <details open>
+        <summary>待处理条款（{displayedPending.length}）</summary>
+        <ul className="model-check-list">{displayedPending.map(item => <li key={item.id}>
           <strong>{item.id} · {item.title}</strong>
           <small>{item.plan?.kind === 'blocked' && item.plan.gap && `${gapLabels[item.plan.gap]} · `}{item.reason}</small>
           {(item.plan?.kind === 'tool-draft' || item.plan?.kind === 'door-clear-width-by-use') &&
@@ -622,12 +793,15 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
         <summary>BIMDown 导出建议（{report.exportFeedback.length}）</summary>
         <ul className="model-check-list">{report.exportFeedback.map(item => <li key={item.ruleId}>
           <strong>{item.ruleId} · {item.affected} 项无法判断</strong>
+          {item.blockers.length > 0 && <small>{item.blockers.map(({ kind, count }) => `${blockerLabels[kind]} ${count} 项`).join(' · ')}</small>}
           <small>文件 {item.files.join('、')}</small><small>字段 {item.fields.join('、')}</small><small>{item.advice}</small>
           {item.scope && <small>适用性记录 {item.scope.ruleId} · {item.scope.ruleVersion} · {item.scope.applicability}</small>}
+          <button type="button" onClick={() => { setRuleFilter(item.ruleId); setFilter('indeterminate'); resultsHeading.current?.focus(); }}>查看受影响对象</button>
         </li>)}</ul>
       </details>}
       {filter !== 'all' && filter !== 'pending' && counts[filter] === 0 && <p>没有此状态的对象结果。</p>}
       <button type="button" onClick={download}>下载核查报告</button>
+      {report.exportFeedback.length > 0 && <button type="button" onClick={() => setBaseline(report)}>保存为复跑基线</button>}
     </section>}
   </aside>;
 }

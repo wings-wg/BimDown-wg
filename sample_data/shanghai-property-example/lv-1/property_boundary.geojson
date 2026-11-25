@@ -1,0 +1,19 @@
+{
+  "type": "FeatureCollection",
+  "modelRevision": "synthetic-sh-property-2022-v1",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "id": "a-center", "frame": "synthetic-local-xy", "boundary_basis": "unit-wall-centerline",
+        "reviewed": true, "source": "合成图 A，外环 80 m²，洞口 3 m²" },
+      "geometry": { "type": "Polygon",
+        "coordinates": [[[0,0],[8,0],[8,10],[0,10],[0,0]], [[2,2],[2,5],[3,5],[3,2],[2,2]]] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": "a-balcony", "frame": "synthetic-local-xy", "boundary_basis": "balcony-eligible-footprint",
+        "reviewed": true, "source": "合成图 A，审核合资格投影 6 m²" },
+      "geometry": { "type": "Polygon", "coordinates": [[[8,0],[10,0],[10,3],[8,3],[8,0]]] }
+    }
+  ]
+}

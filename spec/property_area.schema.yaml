@@ -1,0 +1,54 @@
+name: property_area
+version: 1
+description: Reviewed project-side evidence for the Shanghai 2022 single-building residential difference method.
+file: property_area.json
+profile: sh-property-2022-single-building
+source: 沪房市场〔2022〕49号附件 1.2.1、1.2.2、3.3.1、3.3.2、3.3.3（1）
+fields:
+  version: "1"
+  profile: "sh-property-2022-single-building"
+  modelRevision: "Match engineering_revision in this BIMDown project."
+  building:
+    id: "Stable building ID"
+    parcelId: "Stable parcel ID"
+    scope: "whole-residential-building"
+    source: "Reviewed boundary and building scope"
+  business:
+    type: "new-survey"
+    measuredOn: "ISO calendar date on or after 2022-07-01"
+    source: "Evidence for the business type and applicability of this edition"
+  review:
+    confirmed: "true to run"
+    source: "Review record for boundaries, classification, ownership and coverage"
+  frame: "Shared planar frame when any part uses geometry"
+  gross: "Measurement with basis building-perimeter and independently reviewed areaM2"
+  units: "Array of unique id, ownershipSource and parts"
+  deductions: "Array of measurement parts with basis deduction and kind independent-use or non-allocatable"
+  common:
+    scope: "whole-building"
+    source: "Reviewed independent common-property ledger and benefit scope"
+    beneficiaryUnitIds: "All and only the unit IDs in the plan"
+    parts: "Array of measurement parts with basis common-wall-centerline or outer-half-wall"
+measurement:
+  id: "Unique across the plan"
+  source: "Reviewed survey or drawing reference"
+  basis: "Measured meaning. Unit boundary basis is unit-wall-centerline or the explicit unit-usable plus unit-wall-share split."
+  areaM2: "Nonnegative raw square metres, used alone when supplied"
+  geometry: "Alternatively a level directory and local id identifying a reviewed XY Polygon in <level>/property_boundary.geojson"
+  treatment: "Only for balconies. enclosed (balcony-perimeter), open-eligible (balcony-eligible-footprint), or excluded."
+geometry:
+  collection: "GeoJSON FeatureCollection with modelRevision matching the plan"
+  requiredProperties: "id, frame, boundary_basis, reviewed=true, source"
+  coordinates: "Project units and a shared frame. Closed outer ring followed by holes."
+related_report:
+  file: property-model-evidence.json
+  status: candidate-only
+  description: "Read-only model evidence inventory. Only the reviewed property_area.json is an allocation input."
+  version: 1
+  modelRevision: "BIMDown engineering_revision if present"
+  unit: "m2 for area fields and m for elevationM"
+  levels: "Exported datum scope, role hint, other levels at the same elevation, surface and opening references, room coverage and diagnostics"
+  projectedAreaM2: "Same-level union of valid slab and roof polygons, retaining their existing holes"
+  netProjectionM2: "Union after cutting polygon openings from their unique same-level hosts"
+  rooms: "Per-level saved and derived outline IDs, room records, areas, source paths and diagnostics"
+  roomOutlineCoordinates: "Report polygons and seedM are in metres. Derived candidates use wall centre lines. Saved boundaries carry the declared basis or an unknown status."
