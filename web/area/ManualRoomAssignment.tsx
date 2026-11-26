@@ -20,11 +20,13 @@ export function ManualRoomAssignment({ draft, levelName, rooms, planIds, busy, c
   const [confirmMove, setConfirmMove] = useState(false);
   const [notice, setNotice] = useState<{ text: string; error: boolean }>();
   const owners = new Map(draft.selections.filter(item => item.table === 'space').map(item => [roomKey(item), item.owner]));
+  const commonDraftKeys = new Set(draft.commonRoomDrafts?.map(roomKey));
   const byId = new Map(draft.nodes.map(node => [node.id, node]));
   const selected = rooms.filter(room => checked.has(room.elementId));
   const reassign = selected.some(room => {
-    const owner = owners.get(roomKey(room));
-    return owner && owner !== unit.trim();
+    const key = roomKey(room);
+    const owner = owners.get(key);
+    return commonDraftKeys.has(key) || (owner && owner !== unit.trim());
   });
   const onPlan = rooms.filter(room => planIds.has(`${room.level}:${room.elementId}`) || planIds.has(room.elementId));
   const terms = query.toLowerCase().split(/[,，、]+/).map(term => term.trim()).filter(Boolean);
@@ -88,7 +90,8 @@ export function ManualRoomAssignment({ draft, levelName, rooms, planIds, busy, c
               }} />
               <span>{room.name} <small>{room.elementId}</small></span>
               <small className="area-current-owner">{node && node.type === 'unit' ? `${node.id} 户` :
-                node && node.type === 'pool' ? '已设共用' : owner || '未归户'}</small>
+                node && node.type === 'pool' ? '已设共用' :
+                  commonDraftKeys.has(roomKey(room)) ? '已标为共用' : owner || '未归户'}</small>
             </label>;
           })}
         </div>

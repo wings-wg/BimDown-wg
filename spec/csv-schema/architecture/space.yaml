@@ -16,6 +16,14 @@ fields:
   - name: name
     type: string
 
+  - name: circulation_use
+    type: enum
+    values:
+      - stairwell
+      - elevator_lobby
+      - other
+    description: Optional reviewed use for identifying the public side of a dwelling entrance. Other overrides name-based public circulation inference.
+
   - name: boundary_points
     type: string
     computed: true

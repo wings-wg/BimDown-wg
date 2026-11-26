@@ -39,7 +39,7 @@ export function CommonRoomAllocations({ draft, rooms, level, levelNames, busy, l
         <legend>共用房间 · 已选 {selected.length} 间</legend>
         <div>
           {rooms.map(item => {
-            const { room, group } = item;
+            const { room, group, draft: roomDraft } = item;
             const key = roomKey(room);
             const editable = canEditRoomAllocation(item);
             return <div className="area-common-room-row" key={key}>
@@ -51,7 +51,9 @@ export function CommonRoomAllocations({ draft, rooms, level, levelNames, busy, l
                   choose(next);
                 }} />
                 <span>{levelNames.get(room.level) ?? room.level} · {room.name} <small>{room.elementId}</small>
-                  <small className="area-common-room-status">{editable ? (group ? '已设置' : '待设置') : '在配置 JSON 中维护'}</small>
+                  <small className="area-common-room-status" title={roomDraft?.source}>
+                    {editable ? (group ? '已设置' : roomDraft ? '自动规划 · 待分摊' : '待设置') : '在配置 JSON 中维护'}
+                  </small>
                 </span>
               </label>
               <button type="button" aria-label={`定位 ${room.name} · ${room.elementId}`}

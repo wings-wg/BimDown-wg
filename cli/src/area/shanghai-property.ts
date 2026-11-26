@@ -63,9 +63,9 @@ function adoptedDate(date: unknown) {
   return !Number.isNaN(value.getTime()) && value.toISOString().slice(0, 10) === date && date >= '2022-07-01';
 }
 
-/** Run the reviewed single-building plan without changing BIMDown evidence. */
-export async function executeShanghaiPropertyArea(text: TextReader, planText?: string, userConfirmed = true) {
-  const base = { tool, ruleSource: SHANGHAI_RULE, unit: 'm2' };
+const base = { tool, ruleSource: SHANGHAI_RULE, unit: 'm2' };
+
+async function bindShanghaiPropertyArea(text: TextReader, planText: string | undefined, approval?: { confirmed: boolean }) {
   let modelRevision: string | undefined;
   try {
     const metadataText = await text('project_metadata.json');
@@ -91,8 +91,10 @@ export async function executeShanghaiPropertyArea(text: TextReader, planText?: s
     requireEvidence(plan.building?.scope === 'whole-residential-building' &&
       [plan.building.id, plan.building.parcelId, plan.building.source].every(hasText),
     'needs-review', 'building', '请确认单宗地单幢住宅的全幢范围及来源。');
-    requireEvidence(userConfirmed && plan.review?.confirmed === true && hasText(plan.review.source),
-      'needs-review', 'review', '请确认测算依据、分项和权属范围，并记录复核来源。');
+    if (approval) {
+      requireEvidence(approval.confirmed && plan.review?.confirmed === true && hasText(plan.review.source),
+        'needs-review', 'review', '请确认测算依据、分项和权属范围，并记录复核来源。');
+    }
     requireEvidence(Array.isArray(plan.units) && plan.units.length > 0 && plan.units.length <= 2_000 &&
       Array.isArray(plan.deductions) && Array.isArray(plan.common?.parts),
     'missing-data', 'units / deductions / common', '套内、扣除项和共有台账须完整列出。');
@@ -224,27 +226,46 @@ export async function executeShanghaiPropertyArea(text: TextReader, planText?: s
     const denominator = units.reduce((sum, unit) => sum + unit.adopted, 0n);
     const shared = adoptedGross - adoptedDeductions - denominator;
     requireEvidence(shared >= 0n, 'conflict', 'gross', '取位后的幢总量小于套内及扣除项之和。');
-    let distributed = 0n;
-    const rows = units.map(({ adopted, raw, ...unit }) => {
-      const quota = shared * adopted;
-      const rawShare = Number(quota) / Number(denominator) / 100;
-      const share = halfUp(quota, denominator);
-      distributed += share;
-      return { ...unit, internalAreaRaw: raw, internalArea: squareMetres(adopted),
-        sharedAreaRaw: rawShare, sharedArea: squareMetres(share),
-        totalAreaRaw: squareMetres(adopted) + rawShare, totalArea: squareMetres(adopted + share) };
-    });
-    return { ...base, status: 'success' as const, modelRevision: plan.modelRevision, plan,
-      units: rows, common, deductions, gross,
-      reconciliation: { adoptedGross: squareMetres(adoptedGross), adoptedDeductions: squareMetres(adoptedDeductions),
-        denominator: squareMetres(denominator), rawShared, shared: squareMetres(shared),
-        ledgerRaw: decimalSum(commonValues).raw, ledgerAdopted: squareMetres(ledger),
-        ledgerRoundingDifference: squareMetres(shared - ledger), coefficient: Number(shared) / Number(denominator),
-        distributed: squareMetres(distributed), reportRoundingDifference: squareMetres(distributed - shared) } };
+    return { status: 'bound' as const, plan, units, common, deductions, gross,
+      adoptedGross, adoptedDeductions, denominator, shared, rawShared, ledger, ledgerRaw: decimalSum(commonValues).raw };
   } catch (error) {
     const diagnostic = error instanceof EvidenceError ? error : new EvidenceError('invalid', PROPERTY_AREA_PATH,
       error instanceof Error ? error.message : '无法读取或复算测算证据。');
     return { ...base, modelRevision, status: 'input-incomplete' as const,
       diagnostics: [{ kind: diagnostic.kind, field: diagnostic.field, message: diagnostic.message }] };
   }
+}
+
+/** Check the evidence and reconciliation without approving it or producing allocations. */
+export async function inspectShanghaiPropertyArea(text: TextReader, planText?: string) {
+  const binding = await bindShanghaiPropertyArea(text, planText);
+  if (binding.status === 'input-incomplete') return binding;
+  const { plan, units } = binding;
+  return { ...base, status: 'ready-for-review' as const, modelRevision: plan.modelRevision,
+    buildingId: plan.building.id, unitCount: units.length, hasReviewSource: hasText(plan.review?.source) };
+}
+
+/** Run the reviewed single-building plan without changing BIMDown evidence. */
+export async function executeShanghaiPropertyArea(text: TextReader, planText?: string, userConfirmed = true) {
+  const binding = await bindShanghaiPropertyArea(text, planText, { confirmed: userConfirmed });
+  if (binding.status === 'input-incomplete') return binding;
+  const { plan, units, gross, common, deductions, adoptedGross, adoptedDeductions, denominator,
+    shared, rawShared, ledger, ledgerRaw } = binding;
+  let distributed = 0n;
+  const rows = units.map(({ adopted, raw, ...unit }) => {
+    const quota = shared * adopted;
+    const rawShare = Number(quota) / Number(denominator) / 100;
+    const share = halfUp(quota, denominator);
+    distributed += share;
+    return { ...unit, internalAreaRaw: raw, internalArea: squareMetres(adopted),
+      sharedAreaRaw: rawShare, sharedArea: squareMetres(share),
+      totalAreaRaw: squareMetres(adopted) + rawShare, totalArea: squareMetres(adopted + share) };
+  });
+  return { ...base, status: 'success' as const, modelRevision: plan.modelRevision, plan,
+    units: rows, common, deductions, gross,
+    reconciliation: { adoptedGross: squareMetres(adoptedGross), adoptedDeductions: squareMetres(adoptedDeductions),
+      denominator: squareMetres(denominator), rawShared, shared: squareMetres(shared),
+      ledgerRaw, ledgerAdopted: squareMetres(ledger),
+      ledgerRoundingDifference: squareMetres(shared - ledger), coefficient: Number(shared) / Number(denominator),
+      distributed: squareMetres(distributed), reportRoundingDifference: squareMetres(distributed - shared) } };
 }

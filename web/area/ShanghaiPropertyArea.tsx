@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { useDataSource } from 'bimdown-editor';
-import { executeShanghaiPropertyArea, PROPERTY_AREA_PATH, SHANGHAI_PROFILE } from './core/shanghai-property.js';
+import { useDataSource, useEditorState } from 'bimdown-editor';
+import { executeShanghaiPropertyArea, inspectShanghaiPropertyArea, PROPERTY_AREA_PATH, SHANGHAI_PROFILE } from './core/shanghai-property.js';
 import { inspectPropertyModelEvidence, type PropertyModelEvidence } from './core/property-model-evidence.js';
+import type { WorkspaceCommandRequest } from './editor-commands.js';
+import { PropertyBoundaryReview } from './PropertyBoundaryReview.tsx';
 
 type Result = Awaited<ReturnType<typeof executeShanghaiPropertyArea>>;
+type Readiness = Awaited<ReturnType<typeof inspectShanghaiPropertyArea>>;
 const area = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const openingLabels: Record<PropertyModelEvidence['levels'][number]['openings'][number]['status'], string> = {
   'hosted-cut': '按宿主投影扣除',
@@ -63,8 +66,10 @@ function download(name: string, value: string) {
 
 type Locate = (level: string, id?: string) => void;
 
-function ModelEvidenceView({ evidence, locate }: { evidence: PropertyModelEvidence; locate: Locate }) {
-  const [levelId, selectLevel] = useState(evidence.levels[0].id);
+function ModelEvidenceView({ evidence, locate, currentLevel, active, configText }: {
+  evidence: PropertyModelEvidence; locate: Locate; currentLevel: string; active: boolean; configText: string;
+}) {
+  const [levelId, selectLevel] = useState(currentLevel);
   const level = evidence.levels.find(item => item.id === levelId) ?? evidence.levels[0];
   const issues = [...evidence.diagnostics, ...level.diagnostics];
   const floorsWithRooms = evidence.levels.filter(item => item.rooms.rowCount > 0).length;
@@ -87,6 +92,8 @@ function ModelEvidenceView({ evidence, locate }: { evidence: PropertyModelEviden
       <dt>扣除有宿主洞口后的投影（m²）</dt><dd>{displayArea(level.netProjectionM2)}</dd>
       <dt>房间轮廓候选</dt><dd>已保存 {level.rooms.outlineIds.length} · 由定位点推导 {level.rooms.derivedOutlineIds.length} · 待核 {level.rooms.needsReviewCount}</dd>
     </dl>
+    <PropertyBoundaryReview key={level.id} evidence={evidence} level={level} configText={configText}
+      active={active} locate={locate} download={download} />
     {!level.rooms.rowCount && <p>可从 Revit 补导房间及轮廓，或在网页自动创建房间。</p>}
     {!!level.rooms.items.length && <details><summary>逐间查看面积与边界（{level.rooms.rowCount}）</summary>
       <ul className="area-room-preview">
@@ -120,15 +127,30 @@ function ModelEvidenceView({ evidence, locate }: { evidence: PropertyModelEviden
   </section>;
 }
 
-export function ShanghaiPropertyArea({ locate, outlineRevision }: { locate: Locate; outlineRevision: number }) {
+export function ShanghaiPropertyArea({ locate, outlineRevision, command, configText, active }: {
+  locate: Locate; outlineRevision: number; command?: WorkspaceCommandRequest; configText: string; active: boolean;
+}) {
   const ds = useDataSource();
+  const { currentLevel, lastMutation, floorWrites } = useEditorState();
+  const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState('');
   const [reviewed, setReviewed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<Result>();
+  const [readiness, setReadiness] = useState<Readiness>();
   const [modelEvidence, setModelEvidence] = useState<PropertyModelEvidence>();
   const [error, setError] = useState('');
   const generation = useRef(0);
+  const details = useRef<HTMLDetailsElement>(null);
+  const handledCommand = useRef<WorkspaceCommandRequest>(undefined);
+
+  useEffect(() => {
+    const keys = [...(lastMutation?.keys ?? []), ...(floorWrites?.writes.at(-1)?.keys ?? [])];
+    if (!keys.some(key => /\/(space|wall|structure_wall|curtain_wall|room_separator|opening|slab|structure_slab|roof)$/.test(key))) return;
+    generation.current++;
+    setModelEvidence(undefined);
+    setBusy(false);
+  }, [lastMutation, floorWrites]);
 
   useEffect(() => {
     generation.current++;
@@ -141,10 +163,11 @@ export function ShanghaiPropertyArea({ locate, outlineRevision }: { locate: Loca
     setDraft('');
     setReviewed(false);
     setReport(undefined);
+    setReadiness(undefined);
     setModelEvidence(undefined);
     setError('');
     setBusy(false);
-    return ds.watchChanges(path => {
+    const stopWatching = ds.watchChanges(path => {
       const reportChanged = path === 'project_metadata.json' || path === PROPERTY_AREA_PATH || path.endsWith('/property_boundary.geojson');
       const modelChanged = path === 'project_metadata.json' || candidateInput.test(path);
       if (!reportChanged && !modelChanged) return;
@@ -152,16 +175,19 @@ export function ShanghaiPropertyArea({ locate, outlineRevision }: { locate: Loca
       if (reportChanged) {
         setReviewed(false);
         setReport(undefined);
+        setReadiness(undefined);
       }
       if (modelChanged) setModelEvidence(undefined);
       setBusy(false);
     });
+    return () => { generation.current++; stopWatching(); };
   }, [ds]);
 
   function edit(text: string) {
     setDraft(text);
     setReviewed(false);
     setReport(undefined);
+    setReadiness(undefined);
     setError('');
   }
 
@@ -177,21 +203,53 @@ export function ShanghaiPropertyArea({ locate, outlineRevision }: { locate: Loca
   }
 
   const read = (path: string) => ds.fetchText(path);
-  return <details>
+
+  function inspectModel() {
+    return run(async current => {
+      const evidence = await inspectPropertyModelEvidence(read);
+      if (current()) setModelEvidence(evidence);
+    });
+  }
+
+  function checkConditions() {
+    return run(async current => {
+      setReport(undefined);
+      setReadiness(undefined);
+      const text = draft.trim() ? draft : await read(PROPERTY_AREA_PATH);
+      if (!current()) return;
+      if (!draft.trim() && text?.trim()) edit(text);
+      const result = await inspectShanghaiPropertyArea(read, text ?? '');
+      if (current()) setReadiness(result);
+    });
+  }
+
+  useEffect(() => {
+    if (busy || command?.plan.action !== 'editor.property-area' || handledCommand.current === command) return;
+    handledCommand.current = command;
+    if (details.current) {
+      details.current.open = true;
+      details.current.scrollIntoView({ block: 'nearest' });
+    }
+    if (command.plan.task === 'inspect') void inspectModel();
+    else void checkConditions();
+  }, [command, busy, inspectModel, checkConditions]);
+
+  const diagnostics = report?.status === 'input-incomplete' ? report.diagnostics
+    : !report && readiness?.status === 'input-incomplete' ? readiness.diagnostics : undefined;
+  return <details ref={details} onToggle={event => setExpanded(event.currentTarget.open)}>
     <summary>上海 2022 版单幢房产面积</summary>
     <p>使用已核定的幢总面积和已复核的套内、扣除项及共有台账，按套内建筑面积比例复算。</p>
     <div className="area-actions">
-      <button type="button" disabled={busy} onClick={() => void run(async current => {
-        const evidence = await inspectPropertyModelEvidence(read);
-        if (current()) setModelEvidence(evidence);
-      })}>从当前模型提取候选证据</button>
+      <button type="button" disabled={busy} onClick={() => void inspectModel()}>从当前模型提取候选证据</button>
       <button type="button" disabled={busy} onClick={() => void run(async current => {
         const text = await read(PROPERTY_AREA_PATH);
         if (!current()) return;
         if (text !== null) edit(text);
         else {
-          const result = await executeShanghaiPropertyArea(read, undefined, false);
-          if (current()) setReport(result);
+          setReport(undefined);
+          setReadiness(undefined);
+          const result = await inspectShanghaiPropertyArea(read, '');
+          if (current()) setReadiness(result);
         }
       })}>读取项目房产证据</button>
       <label className="area-file">导入复核证据<input type="file" accept=".json" disabled={busy} onChange={event => {
@@ -214,9 +272,15 @@ export function ShanghaiPropertyArea({ locate, outlineRevision }: { locate: Loca
         }, null, 2));
       })}>新建证据草稿</button>
     </div>
-    {modelEvidence && <ModelEvidenceView evidence={modelEvidence} locate={locate} />}
+    {modelEvidence && <ModelEvidenceView evidence={modelEvidence} locate={locate} currentLevel={currentLevel}
+      active={active && expanded} configText={configText} />}
     <label>房产面积专项证据<textarea rows={8} disabled={busy} value={draft} onChange={event => edit(event.target.value)} /></label>
     {!!draft.trim() && <small>在证据的 review.source 中填写本次复核依据。</small>}
+    <p><button type="button" disabled={busy} onClick={() => void checkConditions()}>检查复算条件</button></p>
+    {!report && readiness?.status === 'ready-for-review' && <p role="status">
+      幢 {readiness.buildingId} 的 {readiness.unitCount} 户及共有台账通过证据检查。
+      {!readiness.hasReviewSource && '请先填写复核依据。'} 勾选审核后即可运行单幢差额法。
+    </p>}
     <label className="area-review"><input type="checkbox" checked={reviewed} disabled={busy || !draft.trim()}
       onChange={event => { setReviewed(event.target.checked); setReport(undefined); }} />
       我已复核业务类型、幢总量、套内边界、权属及全幢受益范围
@@ -231,8 +295,8 @@ export function ShanghaiPropertyArea({ locate, outlineRevision }: { locate: Loca
     })}>运行单幢差额法</button>
     {!!draft.trim() && <button type="button" onClick={() => download(PROPERTY_AREA_PATH, draft)}>下载证据 JSON</button>}
     {error && <p role="alert">{error}</p>}
-    {report?.status === 'input-incomplete' && <ul aria-label="房产面积补证建议">
-      {report.diagnostics.map(diagnostic => <li key={diagnostic.field}><strong>{diagnostic.field}</strong> · {diagnostic.message}</li>)}
+    {diagnostics && <ul aria-label="房产面积补证建议">
+      {diagnostics.map(diagnostic => <li key={diagnostic.field}><strong>{diagnostic.field}</strong> · {diagnostic.message}</li>)}
     </ul>}
     {report?.status === 'success' && <section aria-label="单幢房产面积复算结果">
       <p>幢总面积 {area.format(report.reconciliation.adoptedGross)} m² ·

@@ -24,6 +24,8 @@ export function listCommonRooms(config: ProjectAreaConfig, rooms: RoomReference[
   const types = new Map(config.nodes.map(node => [node.id, node.type]));
   const selections = new Map<string, ProjectAreaConfig['selections'][number]>();
   const groups = new Map(config.groups.map(group => [group.pool, group]));
+  const drafts = new Map(config.commonRoomDrafts?.map(room => [roomKey(room), room]));
+  const plannedLevels = new Set(config.commonRoomDrafts?.map(room => room.level));
   const unitLevels = new Set<string>();
   for (const item of config.selections) {
     if (item.table !== 'space') continue;
@@ -31,9 +33,12 @@ export function listCommonRooms(config: ProjectAreaConfig, rooms: RoomReference[
     if (types.get(item.owner) === 'unit' && item.kind !== 'excluded' && item.kind !== 'common') unitLevels.add(item.level);
   }
   return rooms.flatMap(room => {
-    const selection = selections.get(roomKey(room));
-    if (selection ? selection.kind !== 'common' || types.get(selection.owner) !== 'pool' : !unitLevels.has(room.level)) return [];
-    return [{ room, selection, group: selection ? groups.get(selection.owner) : undefined }];
+    const key = roomKey(room);
+    const selection = selections.get(key);
+    const draft = drafts.get(key);
+    const legacyUnassigned = unitLevels.has(room.level) && !plannedLevels.has(room.level);
+    if (selection ? selection.kind !== 'common' || types.get(selection.owner) !== 'pool' : !draft && !legacyUnassigned) return [];
+    return [{ room, selection, draft, group: selection ? groups.get(selection.owner) : undefined }];
   });
 }
 

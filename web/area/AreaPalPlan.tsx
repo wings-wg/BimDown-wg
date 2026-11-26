@@ -3,9 +3,10 @@ import { useDataSource } from 'bimdown-editor';
 import { MAX_CLAUSE_TEXT_LENGTH } from '../check/check-import.js';
 import { compilePalIntent } from './pal-client.js';
 import { PAL_INTENT_LIMIT, type PalIntent } from './pal-intent.js';
+import type { PropertyAreaIntent } from './editor-commands.js';
 import type { ModelQaConnection } from './model-qa-types.js';
 
-export function AreaPalPlan({ connection, floor, busy, canCalculate, canOutline, calculate, outline, openCheck }: {
+export function AreaPalPlan({ connection, floor, busy, canCalculate, canOutline, calculate, outline, openCheck, property }: {
   connection?: ModelQaConnection;
   floor: { id: string; name?: string };
   busy: boolean;
@@ -14,6 +15,7 @@ export function AreaPalPlan({ connection, floor, busy, canCalculate, canOutline,
   calculate: () => void;
   outline: (scope: 'level' | 'project') => void;
   openCheck: (text: string) => void;
+  property: (plan: PropertyAreaIntent) => void;
 }) {
   const ds = useDataSource();
   const request = useRef<AbortController | undefined>(undefined);
@@ -70,6 +72,12 @@ export function AreaPalPlan({ connection, floor, busy, canCalculate, canOutline,
       <p>计划按当前配置测算全项目并执行分摊。</p>
       {!canCalculate && <small>请先在下方核对测算配置、规则来源并确认审核。</small>}
       <p><button type="button" disabled={busy || !canCalculate} onClick={calculate}>执行 PAL 测算计划</button></p>
+    </>}
+    {plan?.action === 'editor.property-area' && <>
+      <p>{plan.task === 'inspect' ? '计划读取当前项目的房产面积候选证据。' : '计划先检查上海 2022 版整幢住宅复算所需证据。通过预检后，请在专项面板审核并运行。'}</p>
+      <button type="button" disabled={busy} onClick={() => property(plan)}>
+        {plan.task === 'inspect' ? '提取房产面积候选证据' : '打开专项并检查复算条件'}
+      </button>
     </>}
     {candidate && plan?.action === 'area.outlines' && <>
       <p>计划为{plan.scope === 'project' ? '全部楼层' : candidate.floor.name ?? candidate.floor.id}生成并保存测算轮廓。</p>

@@ -88,7 +88,7 @@ export { calculateAreas, polygonArea, type AreaInput, type AreaPart, type Alloca
 export { inferAreaFactor, type AreaFeatures, type FactorDecision } from "./area/factor.js";
 
 export { calculateProjectAreas, calculateShanghaiPropertyProject, inspectPropertyModelProject, type ProjectAreaConfig } from "./area/project.js";
-export { executeShanghaiPropertyArea, type ShanghaiPropertyPlan } from './area/shanghai-property.js';
+export { executeShanghaiPropertyArea, inspectShanghaiPropertyArea, type ShanghaiPropertyPlan } from './area/shanghai-property.js';
 export { inspectPropertyModelEvidence, type PropertyModelEvidence } from './area/property-model-evidence.js';
 
 export { validateRule, diagnose, executeRule, type EngineeringRule, type EngineeringDatum, type Diagnostic } from './engineering/index.js';

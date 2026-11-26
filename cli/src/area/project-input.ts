@@ -14,6 +14,8 @@ export interface ProjectAreaConfig extends Omit<AreaInput, 'parts'> {
     features?: AreaFeatures;
     source: string;
   }[];
+  /** Confirmed room grouping awaiting allocation inputs. These rooms are omitted from the area calculation. */
+  commonRoomDrafts?: { level: string; elementId: string; source: string }[];
   /** Supplementary reviewed wall/other areas not represented by polygons. */
   parts?: AreaPart[];
 }

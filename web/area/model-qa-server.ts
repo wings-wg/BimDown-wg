@@ -8,6 +8,8 @@ import { PAL_BATCH_SIZE, PAL_PROMPT, palToolContext, parsePalClause, parsePalJso
 import { createPalLibrary } from './pal-library-server.ts';
 import { PAL_INTENT_LIMIT, palIntentPrompt, parsePalIntent } from './src/area/pal-intent.ts';
 import { editorIntentHasGroundedTarget, isEditorIntent } from './src/area/editor-commands.ts';
+import { DEVELOPMENT_API } from './src/area/development-request.mts';
+import { createDevelopmentHandler, createDevelopmentJobs } from './development-jobs-server.ts';
 
 const maxRequestBytes = 64 * 1024;
 const sessionLifetime = 12 * 60 * 60 * 1_000;
@@ -190,7 +192,7 @@ export function createModelQaHandler(env: Record<string, string>, fetchModel: ty
       const channel = request?.channel;
       const text = typeof request?.text === 'string' ? request.text.trim() : '';
       const previousQuestion = request?.previousQuestion;
-      if ((channel !== 'area' && channel !== 'question') || !text || text.length > PAL_INTENT_LIMIT ||
+      if ((channel !== 'area' && channel !== 'question' && channel !== 'development') || !text || text.length > PAL_INTENT_LIMIT ||
           (previousQuestion !== undefined && (channel !== 'question' || typeof previousQuestion !== 'string' ||
             previousQuestion.length > PAL_INTENT_LIMIT)))
         return reply(res, 400, { error: '工程任务入口或文本无效。' });
@@ -200,12 +202,14 @@ export function createModelQaHandler(env: Record<string, string>, fetchModel: ty
           { role: 'system', content: palIntentPrompt(channel) },
           { role: 'user', content: JSON.stringify({ text, previousQuestion,
             ...(channel === 'question' && palToolContext(tools)) }) },
-        ], 45_000);
+        ], channel === 'development' ? 15_000 : 45_000);
         let plan;
         try { plan = parsePalIntent(parsePalJson(answer), channel, tools); } catch { /* Report an invalid plan below. */ }
         if (!plan) return reply(res, 502, { error: '语言模型未返回当前入口支持的 PAL 计划。' });
         if (isEditorIntent(plan) && !editorIntentHasGroundedTarget(plan, text))
-          return reply(res, 200, { plan: { action: 'blocked', gap: 'clarification', reason: '请明确要切换的楼层名称或编号。' } });
+          return reply(res, 200, { plan: { action: 'blocked', gap: 'clarification',
+            reason: plan.action === 'editor.transfer-floor-assignment'
+              ? '请明确用于参照的楼层和需要归户的目标楼层。' : '请明确要切换的楼层名称或编号。' } });
         const tool = plan.action === 'tool.draft'
           ? await library.draft(plan.recipe, { model: configuration.model, clauseId: 'model-question' })
           : plan.action === 'tool.measure' ? tools.find(entry => entry.id === plan.toolId) : undefined;
@@ -279,9 +283,11 @@ export function modelQaPlugin(): Plugin {
     name: 'bimdown-model-qa',
     configureServer(server) {
       server.middlewares.use(MODEL_QA_PATH, handler(server.config));
+      server.middlewares.use(DEVELOPMENT_API, createDevelopmentHandler(createDevelopmentJobs(resolve(server.config.root, '../..'))));
     },
     configurePreviewServer(server) {
       server.middlewares.use(MODEL_QA_PATH, handler(server.config));
+      server.middlewares.use(DEVELOPMENT_API, createDevelopmentHandler(createDevelopmentJobs(resolve(server.config.root, '../..'))));
     },
   };
 }

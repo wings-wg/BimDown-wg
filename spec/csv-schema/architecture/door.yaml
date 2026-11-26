@@ -34,6 +34,10 @@ fields:
       - left
       - right
 
+  - name: is_unit_entrance
+    type: boolean
+    description: Optional instance marking for a dwelling entrance, used as a boundary in room grouping. Empty means unmarked.
+
   - name: type_id
     type: reference
     reference: door_type

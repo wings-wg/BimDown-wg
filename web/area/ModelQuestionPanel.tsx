@@ -11,6 +11,7 @@ import type { PalIntent } from './pal-intent.js';
 import { editorCommandExamples, editorIntentHasGroundedTarget, isEditorIntent, localEditorIntent, matchEditorLevel, resolveDeleteIds,
   type EditorIntent, type WorkspaceCommandRequest, type WorkspacePanel } from './editor-commands.js';
 import { AutomaticRooms } from './AutomaticRooms.tsx';
+import { localDevelopmentDraft, type DevelopmentRequest } from './development-request.mjs';
 import './model-qa.css';
 
 type Turn = {
@@ -36,7 +37,7 @@ function formatFact(value: unknown): string {
   return String(value);
 }
 
-export function ModelQuestionPanel({ report, areaDraft, onConnectionChange, openCheck, openPanel, runWorkspaceCommand, toolDrafted }: {
+export function ModelQuestionPanel({ report, areaDraft, onConnectionChange, openCheck, openPanel, runWorkspaceCommand, toolDrafted, openDevelopment }: {
   report?: ReturnType<typeof calculateProjectAreasFromText>;
   areaDraft: string;
   onConnectionChange?: (connection: ModelQaConnection) => void;
@@ -44,6 +45,7 @@ export function ModelQuestionPanel({ report, areaDraft, onConnectionChange, open
   openPanel: (panel: WorkspacePanel) => void;
   runWorkspaceCommand: (request: WorkspaceCommandRequest) => void;
   toolDrafted: () => void;
+  openDevelopment: (task: DevelopmentRequest) => void;
 }) {
   const ds = useDataSource();
   const state = useEditorState();
@@ -188,6 +190,23 @@ export function ModelQuestionPanel({ report, areaDraft, onConnectionChange, open
       case 'editor.area-workflow':
         runWorkspaceCommand({ plan, level: levelAtRequest });
         return '已打开对应的面积测算操作，状态显示在面积面板。';
+      case 'editor.transfer-floor-assignment': {
+        if (current.currentLevel !== levelAtRequest) return '当前楼层已变化，请重新发送归户请求。';
+        const levels = current.project?.levels ?? [];
+        const source = matchEditorLevel(levels, levelAtRequest, plan.source);
+        const target = matchEditorLevel(levels, levelAtRequest, plan.target);
+        if (source.ambiguous || target.ambiguous) return '匹配到多个楼层，请使用准确楼层名称或编号。';
+        if (!source.level || !target.level) return '请指定当前项目中存在的参照楼层和目标楼层。';
+        if (source.level.id === target.level.id) return '参照楼层和目标楼层必须不同。';
+        if (current.viewMode !== '2d') dispatch({ type: 'SET_VIEW_MODE', mode: '2d' });
+        if (current.currentLevel !== target.level.id) dispatch({ type: 'SET_LEVEL', levelId: target.level.id });
+        runWorkspaceCommand({ plan, level: target.level.id, sourceLevel: source.level.id });
+        return `正在按 ${source.level.name || source.level.id} 的入户门位置预览 ${target.level.name || target.level.id} 分户，请在面积面板核对。`;
+      }
+      case 'editor.property-area':
+        runWorkspaceCommand({ plan, level: levelAtRequest });
+        return plan.task === 'inspect' ? '已打开上海房产面积专项，候选证据显示在面积面板。'
+          : '已打开上海房产面积专项检查复算条件，请在面积面板确认。';
       case 'editor.preview-rooms':
       case 'editor.help':
         return;
@@ -209,7 +228,16 @@ export function ModelQuestionPanel({ report, areaDraft, onConnectionChange, open
     try {
       let compilation: Awaited<ReturnType<typeof compilePalIntent>> | undefined;
       const local = localEditorIntent(prompt);
-      if (local?.action === 'editor.delete') result.plan = local;
+      const localDraft = localDevelopmentDraft(prompt);
+      if (localDraft) {
+        result.plan = { action: 'development.draft', task: localDraft };
+        if (provider) {
+          try {
+            const { plan } = await compilePalIntent('development', prompt, sessionId, controller.signal);
+            if (plan.action === 'development.draft') result.plan = plan;
+          } catch { /* Keep the editable draft of the user's explicitly marked request. */ }
+        }
+      } else if (local?.action === 'editor.delete') result.plan = local;
       else if (provider) {
         try {
           compilation = await compilePalIntent('question', prompt, sessionId, controller.signal, previousQuestion);
@@ -218,7 +246,8 @@ export function ModelQuestionPanel({ report, areaDraft, onConnectionChange, open
           if (result.plan.action === 'tool.draft') toolDrafted();
         } catch (error) {
           if (controller.signal.aborted) return;
-          result.error = `PAL 意图识别暂不可用，已转入模型证据查询。 ${error instanceof Error ? error.message : ''}`;
+          if (local?.action === 'editor.transfer-floor-assignment') result.plan = local;
+          else result.error = `PAL 意图识别暂不可用，已转入模型证据查询。 ${error instanceof Error ? error.message : ''}`;
         }
       } else result.plan = local;
       const candidate = result.plan;
@@ -228,10 +257,20 @@ export function ModelQuestionPanel({ report, areaDraft, onConnectionChange, open
           result.operation = '请明确指定当前楼层的构件编号、类别或已选对象。';
           return;
         }
+        if (candidate.action === 'editor.transfer-floor-assignment' && !editorIntentHasGroundedTarget(candidate, prompt)) {
+          result.operation = '请明确指定参照楼层和目标楼层。';
+          return;
+        }
         result.operation = executeEditorCommand(candidate, result.level);
         return;
       }
       const plan = result.plan;
+      if (plan?.action === 'development.draft') {
+        if (controller.signal.aborted || activeSource.current !== ds) return;
+        openDevelopment(plan.task);
+        result.operation = '已生成开发任务草稿，请在功能建议面板核对需求和验收标准。';
+        return;
+      }
       if (plan?.action === 'check.clause' || plan?.action === 'tool.draft') return;
       if (plan?.action === 'tool.measure') {
         const tool = compilation?.tool;

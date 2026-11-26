@@ -24,14 +24,37 @@ export interface DoorCandidate {
   rooms: CandidateRoom[];
   warnings: string[];
 }
-interface DoorAssignmentPreview {
+export interface DoorAssignmentPreview {
   source?: 'floor-plan';
   doorUuid: string;
   entry: ScopedObject;
   candidates: DoorCandidate[];
+  transferSource?: string;
+  publicSide?: { rooms: CandidateRoom[]; anchors: CandidateRoom[]; warnings: string[]; sharedDoorIds?: string[] };
+}
+
+export interface FloorDoorAssignmentPreview {
+  level: string;
+  commonAreas: { rooms: CandidateRoom[]; doorIds: string[] }[];
+  households: { doorId: string; commonArea: number; candidate: DoorCandidate }[];
+  transfer?: { sourceLevel: string; matches: { sourceDoorId: string; targetDoorId: string; distanceMetres: number }[] };
 }
 
 const scopedKey = ({ level, elementId }: ScopedObject) => JSON.stringify([level, elementId]);
+
+/** Read scoped entrance references from existing single-door and batch assignment evidence. */
+export function assignedEntranceIds(config: ProjectAreaConfig, level: string) {
+  const units = new Set(config.nodes.filter(node => node.type === 'unit').map(node => node.id));
+  const prefix = `入户门 ${level}/door/`;
+  return new Set(config.selections.flatMap(item => {
+    if (item.level !== level || item.table !== 'space' || item.kind === 'common' || item.kind === 'excluded' ||
+        !units.has(item.owner) || typeof item.source !== 'string') return [];
+    const evidence = item.source.split('；');
+    if (evidence.includes('网页手动归户')) return [];
+    const doorId = evidence.find(part => part.startsWith(prefix))?.slice(prefix.length).split('（')[0];
+    return doorId ? [doorId] : [];
+  }));
+}
 
 /** Preview connected components on either side of an explicitly selected entrance. */
 export function previewDoorAssignment(
@@ -152,7 +175,27 @@ export function applyDoorAssignment(
 ): ProjectAreaConfig {
   const owner = resolveAssignmentUnit(config, unit);
   const selections = [...config.selections];
+  const commonRooms = new Map(config.commonRoomDrafts?.map(room => [scopedKey(room), room]));
+  const entrance = `${preview.entry.level}/door/${preview.entry.elementId}`;
+  if (preview.publicSide) {
+    const anchors = preview.publicSide.anchors.map(room => `${room.level}/space/${room.elementId}`).join('、');
+    const sharedDoors = preview.publicSide.sharedDoorIds?.map(id => `${preview.entry.level}/door/${id}`).join('、');
+    const source = sharedDoors ? `网页平面几何推断；共同连通的入户门 ${sharedDoors}` :
+      `网页平面几何推断；入户门 ${entrance}；公共交通空间 ${anchors}`;
+    const types = new Map(config.nodes.map(node => [node.id, node.type]));
+    const commonIds = new Set(preview.publicSide.rooms.map(scopedKey));
+    if (candidate.rooms.some(room => commonIds.has(scopedKey(room))))
+      throw new Error('公共侧与拟归户的房间发生重叠，请重新预览。');
+    for (const room of preview.publicSide.rooms) {
+      const previous = selections.find(item => item.table === 'space' && scopedKey(item) === scopedKey(room));
+      if (previous && (previous.kind !== 'common' || types.get(previous.owner) !== 'pool'))
+        throw new Error(`公共侧的房间 ${room.name} 已有其他归属，请先核对原配置。`);
+      const key = scopedKey(room);
+      if (sharedDoors || !commonRooms.has(key)) commonRooms.set(key, { level: room.level, elementId: room.elementId, source });
+    }
+  }
   for (const room of candidate.rooms) {
+    if (commonRooms.has(scopedKey(room))) throw new Error(`房间 ${room.name} 已标为共用，请先核对原归属。`);
     const assigned = selections.find(item => item.table === 'space' && scopedKey(item) === scopedKey(room));
     if (assigned) {
       if (assigned.owner !== unit || assigned.kind === 'common' || assigned.kind === 'excluded')
@@ -162,14 +205,48 @@ export function applyDoorAssignment(
     const id = `${room.level}/space/${room.elementId}`;
     if (selections.some(item => item.id === id) || config.parts?.some(part => part.id === id))
       throw new Error(`分项 ID ${id} 已存在，请核对原配置。`);
-    const entrance = `${preview.entry.level}/door/${preview.entry.elementId}`;
     const evidence = preview.source === 'floor-plan'
       ? `网页平面几何推断；入户门 ${entrance}；户内起点 ${candidate.inside.level}/space/${candidate.inside.elementId}；房间 ${id}`
       : `area_features.json；入户门 ${entrance}（${preview.doorUuid}）；户内起点 ${candidate.inside.uuid}；房间 ${room.uuid}`;
     selections.push({ id, level: room.level, table: 'space', elementId: room.elementId, owner: unit,
       kind: 'usable', factor: 1,
-      source: `${evidence}；已确认归户，测算边界与系数待审核` });
+      source: [evidence, preview.transferSource, '已确认归户，测算边界与系数待审核'].filter(Boolean).join('；') });
   }
   return { ...config, confirmed: false, selections,
+    ...(preview.publicSide && { commonRoomDrafts: [...commonRooms.values()] }),
     nodes: config.nodes.includes(owner) ? config.nodes : [...config.nodes, owner] };
+}
+
+/** Stage the complete floor assignment in memory. The caller persists only a successful result. */
+export function applyFloorDoorAssignments(
+  config: ProjectAreaConfig,
+  preview: FloorDoorAssignmentPreview,
+  unitNumbers: ReadonlyMap<string, string>,
+): ProjectAreaConfig {
+  if (preview.households.length < 2) throw new Error('本层批量分户至少需要两樘入户门。');
+  const assigned = preview.households.map(household => ({ ...household, unit: unitNumbers.get(household.doorId)?.trim() ?? '' }));
+  if (assigned.some(item => !item.unit)) throw new Error('请为每樘入户门填写户号。');
+  if (new Set(assigned.map(item => item.unit)).size !== assigned.length) throw new Error('本层批量分户的户号不能重复。');
+
+  let result = config;
+  const stagedCommonAreas = new Set<number>();
+  for (const { doorId, candidate, commonArea, unit } of assigned) {
+    const entry = { level: preview.level, elementId: doorId };
+    const area = preview.commonAreas[commonArea];
+    if (!area?.doorIds.includes(doorId)) throw new Error(`入户门 ${doorId} 缺少对应的公共侧，请重新预览。`);
+    const roomIds = new Set(candidate.rooms.map(room => room.elementId));
+    if (config.selections.some(item => item.level === preview.level && item.table === 'space' &&
+        item.owner === unit && item.kind !== 'common' && item.kind !== 'excluded' && !roomIds.has(item.elementId)))
+      throw new Error(`户号 ${unit} 在本层已有房间位于 ${doorId} 的户内范围之外，请核对户号或户界。`);
+    const publicSide = stagedCommonAreas.has(commonArea) ? undefined :
+      { rooms: area.rooms, anchors: [], warnings: [], sharedDoorIds: area.doorIds };
+    const reference = preview.transfer?.matches.find(match => match.targetDoorId === doorId);
+    const transferSource = preview.transfer && reference ?
+      `位置参照 ${preview.transfer.sourceLevel}/door/${reference.sourceDoorId}；平面偏差 ${reference.distanceMetres.toFixed(3)} m` : undefined;
+    result = applyDoorAssignment(result, {
+      source: 'floor-plan', entry, doorUuid: JSON.stringify([entry.level, 'door', doorId]), candidates: [candidate], publicSide, transferSource,
+    }, candidate, unit);
+    stagedCommonAreas.add(commonArea);
+  }
+  return result;
 }

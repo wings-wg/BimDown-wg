@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { EditorShell, generateMeasurementOutlines, parseCsv, parseLayer, previewPlanDoorAssignment, useDataSource, useEditorDispatch, useEditorState, useSelectionState } from 'bimdown-editor';
+import { EditorShell, FloorAssignmentPreviewProvider, floorAssignmentColors, useFloorAssignmentPreview, generateMeasurementOutlines, parseCsv, parseLayer, previewFloorDoorAssignments, previewPlanDoorAssignment, previewTransferredFloorDoors, stageTransferredDoorMarks, useDataSource, useEditorDispatch, useEditorState, useSelectionState } from 'bimdown-editor';
 import { calculateProjectAreasFromText, projectGeometryPath } from './core/project-input.js';
 import type { ProjectAreaConfig } from './core/project-input.js';
-import { applyDoorAssignment, previewDoorAssignment } from './core/door-assignment.js';
+import { applyDoorAssignment, applyFloorDoorAssignments, assignedEntranceIds, previewDoorAssignment, type DoorAssignmentPreview, type FloorDoorAssignmentPreview } from './core/door-assignment.js';
 import { AutomaticRooms } from './AutomaticRooms.tsx';
 import { UnitRoomList } from './UnitRoomList.tsx';
 import { CommonRoomAllocations } from './CommonRoomAllocations.tsx';
@@ -17,13 +17,20 @@ import type { ModelQaConnection } from './model-qa-types.js';
 import { AreaPalPlan } from './AreaPalPlan.tsx';
 import { ShanghaiPropertyArea } from './ShanghaiPropertyArea.tsx';
 import { DevelopmentFeedback } from './DevelopmentFeedback.tsx';
+import { developmentJobId, type DevelopmentRequest } from './development-request.mjs';
 import type { WorkspaceCommandRequest, WorkspacePanel } from './editor-commands.js';
 import './area.css';
 
 type Report = ReturnType<typeof calculateProjectAreasFromText> & { pendingCommonRooms: RoomReference[] };
 type Selection = ProjectAreaConfig['selections'][number];
-type DoorPreviewResult = ReturnType<typeof previewDoorAssignment> & { source?: 'floor-plan' };
-type DoorPreview = DoorPreviewResult & { missingContours: Set<string> };
+type DoorPreview = DoorAssignmentPreview & { missingContours: Set<string> };
+type FloorDoorPreview = {
+  snapshot: Parameters<typeof floorAssignmentColors>[0];
+  plan: FloorDoorAssignmentPreview;
+  unitNumbers: ReadonlyMap<string, string>;
+  missingContours: Set<string>;
+  doorFileBefore?: string;
+};
 const blank: ProjectAreaConfig = { version: 1, confirmed: false, ruleSource: '', nodes: [], groups: [], selections: [] };
 const json = (value: unknown) => JSON.stringify(value, null, 2);
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -31,8 +38,16 @@ const size = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 });
 export const AreaConfigInArchive = createContext(false);
 type SaveStatus = { text: string; phase: 'saving' | 'saved' | 'loaded' | 'empty' | 'error'; error?: string };
 
+function blockedDoorRooms(config: ProjectAreaConfig, level: string) {
+  const blockedOwners = new Set(config.nodes.filter(node => node.type === 'pool' || node.type === 'excluded').map(node => node.id));
+  const blocked = new Set(config.selections.filter(item => item.level === level && item.table === 'space' &&
+    (blockedOwners.has(item.owner) || item.kind === 'common' || item.kind === 'excluded')).map(item => item.elementId));
+  for (const room of config.commonRoomDrafts ?? []) if (room.level === level) blocked.add(room.elementId);
+  return blocked;
+}
+
 export function AreaWorkspace() {
-  const [panel, setPanel] = useState<WorkspacePanel>();
+  const [panel, setPanel] = useState<WorkspacePanel | undefined>(() => developmentJobId(window.location.search) ? 'feedback' : undefined);
   const [checkMounted, setCheckMounted] = useState(false);
   const [configText, setConfigText] = useState(json(blank));
   const [report, setReport] = useState<Report>();
@@ -40,8 +55,9 @@ export function AreaWorkspace() {
   const [libraryRevision, setLibraryRevision] = useState(0);
   const [textDraft, setTextDraft] = useState('');
   const [command, setCommand] = useState<WorkspaceCommandRequest>();
+  const [developmentDraft, setDevelopmentDraft] = useState<DevelopmentRequest>();
   const ds = useDataSource();
-  useEffect(() => { setTextDraft(''); setCommand(undefined); }, [ds]);
+  useEffect(() => { setTextDraft(''); setCommand(undefined); setDevelopmentDraft(undefined); }, [ds]);
 
   function openPanel(target: WorkspacePanel) {
     if (target === 'check') setCheckMounted(true);
@@ -58,7 +74,7 @@ export function AreaWorkspace() {
     openPanel('check');
   }
   return (
-    <div className="area-page">
+    <FloorAssignmentPreviewProvider><div className="area-page">
       <div className="area-workspace">
         <div className="area-editor"><EditorShell /></div>
         <div className="area-tools">
@@ -73,20 +89,22 @@ export function AreaWorkspace() {
             aria-controls="development-feedback" onClick={() => setPanel(panel === 'feedback' ? undefined : 'feedback')}>功能建议</button>
         </div>
         <AreaPanel open={panel === 'area'} configText={configText} setConfigText={setConfigText} report={report} setReport={setReport}
-          connection={modelConnection} openCheck={openCheck} command={command?.plan.action === 'editor.area-workflow' ? command : undefined} />
+          connection={modelConnection} openCheck={openCheck} runWorkspaceCommand={runWorkspaceCommand}
+          command={command?.plan.action === 'editor.run-check' ? undefined : command} />
         {checkMounted && <ModelCheckPanel open={panel === 'check'} close={() => setPanel(undefined)} connection={modelConnection}
           libraryRevision={libraryRevision} textDraft={textDraft} setTextDraft={setTextDraft}
           command={command?.plan.action === 'editor.run-check' ? command : undefined} />}
-        <DevelopmentFeedback open={panel === 'feedback'} close={() => setPanel(undefined)} />
+        <DevelopmentFeedback open={panel === 'feedback'} draft={developmentDraft} close={() => setPanel(undefined)} />
       </div>
       <ModelQuestionPanel areaDraft={configText} report={report} onConnectionChange={setModelConnection} openCheck={openCheck}
         openPanel={openPanel} runWorkspaceCommand={runWorkspaceCommand}
-        toolDrafted={() => setLibraryRevision(value => value + 1)} />
-    </div>
+        toolDrafted={() => setLibraryRevision(value => value + 1)}
+        openDevelopment={task => { setDevelopmentDraft(task); openPanel('feedback'); }} />
+    </div></FloorAssignmentPreviewProvider>
   );
 }
 
-function AreaPanel({ open, configText, setConfigText, report, setReport, connection, openCheck, command }: {
+function AreaPanel({ open, configText, setConfigText, report, setReport, connection, openCheck, runWorkspaceCommand, command }: {
   open: boolean;
   configText: string;
   setConfigText: (value: string) => void;
@@ -94,6 +112,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
   setReport: (value: Report | undefined) => void;
   connection?: ModelQaConnection;
   openCheck: (text: string) => void;
+  runWorkspaceCommand: (request: WorkspaceCommandRequest) => void;
   command?: WorkspaceCommandRequest;
 }) {
   const ds = useDataSource();
@@ -108,12 +127,22 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
   const [reviewed, setReviewed] = useState(false);
   const [notice, setNotice] = useState('');
   const [doorNotice, setDoorNotice] = useState<{ text: string; error: boolean }>();
+  const [floorDoorNotice, setFloorDoorNotice] = useState<{ text: string; error: boolean }>();
   const [busy, setBusy] = useState(false);
   const [outlineScope, setOutlineScope] = useState<'level' | 'project'>('level');
   const [outlineResult, setOutlineResult] = useState<Awaited<ReturnType<typeof generateMeasurementOutlines>>>();
   const [outlineRevision, setOutlineRevision] = useState(0);
   const [outlineError, setOutlineError] = useState('');
   const [doorPreview, setDoorPreview] = useState<DoorPreview>();
+  const [floorDoorPreview, setFloorDoorPreview] = useState<FloorDoorPreview>();
+  const setFloorColors = useFloorAssignmentPreview();
+  const floorColors = useMemo(() => floorDoorPreview && floorAssignmentColors(floorDoorPreview.snapshot,
+    floorDoorPreview.plan, floorDoorPreview.unitNumbers), [floorDoorPreview]);
+  useEffect(() => {
+    setFloorColors(open ? floorColors : undefined);
+    return () => setFloorColors(undefined);
+  }, [open, floorColors, setFloorColors]);
+  const [transferSourceLevel, setTransferSourceLevel] = useState('');
   const [doorSource, setDoorSource] = useState<'floor-plan' | 'revit'>('floor-plan');
   const [insideUuid, setInsideUuid] = useState('');
   const [unitNumber, setUnitNumber] = useState('');
@@ -123,10 +152,12 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
   const ruleSourceField = useRef<HTMLInputElement>(null);
   const outlineDetails = useRef<HTMLDetailsElement>(null);
   const doorDetails = useRef<HTMLDetailsElement>(null);
+  const floorDoorDetails = useRef<HTMLDetailsElement>(null);
   const manualSection = useRef<HTMLDivElement>(null);
   const allocationSection = useRef<HTMLDivElement>(null);
   const areaReview = useRef<HTMLInputElement>(null);
   const handledCommand = useRef<WorkspaceCommandRequest>(undefined);
+  const handledTransferCommand = useRef<WorkspaceCommandRequest>(undefined);
   const liveSource = useRef({ ds, project, currentDocument, currentLevel });
   liveSource.current = { ds, project, currentDocument, currentLevel };
 
@@ -138,6 +169,8 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
     setReport(undefined);
     setDoorPreview(undefined);
     setDoorNotice(undefined);
+    setFloorDoorPreview(undefined);
+    setFloorDoorNotice(undefined);
     setNotice('');
   }, [setConfigText, setReport]);
 
@@ -161,6 +194,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
     });
     return () => { active = false; };
   }, [store, displayConfig, restoreConfig]);
+  useEffect(() => { setTransferSourceLevel(''); }, [ds]);
 
   const unsaved = saveStatus?.text !== configText || saveStatus?.phase === 'saving' || saveStatus?.phase === 'error';
   useEffect(() => {
@@ -180,12 +214,13 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
       setReport(undefined);
       setReviewed(false);
       setDoorPreview(undefined);
+      setFloorDoorPreview(undefined);
     };
     invalidate();
     setOutlineResult(undefined);
     setOutlineError('');
     const unsubscribe = ds.watchChanges(path => {
-      if (path.endsWith('.geojson') || path.endsWith('/door.csv') ||
+      if (path.endsWith('.geojson') || path.endsWith('/door.csv') || path.endsWith('/space.csv') ||
           ['project_metadata.json', 'area_features.json', '_IdMap.csv'].includes(path)) invalidate();
     });
     return () => {
@@ -204,7 +239,9 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
   useEffect(() => {
     doorSequence.current += 1;
     setDoorPreview(undefined);
-  }, [currentLevel, currentDocument, project?.levels, project?.globalLayers, project?.metadata]);
+    setFloorDoorPreview(undefined);
+  }, [currentLevel, currentDocument, project?.levels, project?.floors, project?.globalLayers, project?.metadata]);
+  useEffect(() => { setFloorDoorNotice(undefined); }, [currentLevel]);
 
   useEffect(() => {
     if (doorNotice && !doorNotice.error) assignedUnits.current?.scrollIntoView({ block: 'nearest' });
@@ -240,28 +277,29 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
     if (!entry) throw new Error('请在当前楼层单独选择一樘入户门。');
     const request = ++doorSequence.current;
     const config = parse();
-    let result: DoorPreviewResult;
+    let result: DoorAssignmentPreview;
     if (doorSource === 'floor-plan') {
-      const blockedOwners = new Set(config.nodes.filter(node => node.type === 'pool' || node.type === 'excluded').map(node => node.id));
-      const excluded = new Set(config.selections.filter(item => item.level === entry.level && item.table === 'space' &&
-        (blockedOwners.has(item.owner) || item.kind === 'common' || item.kind === 'excluded')).map(item => item.elementId));
-      result = previewPlanDoorAssignment(state, entry, excluded);
+      result = previewPlanDoorAssignment(state, entry, blockedDoorRooms(config, entry.level));
     } else {
       const [evidence, mapping] = await Promise.all([ds.fetchText('area_features.json'), ds.fetchText('_IdMap.csv')]);
       if (!evidence || !mapping) throw new Error('缺少 Revit 门—房间证据，可切换为按当前平面预览。');
       result = previewDoorAssignment(JSON.parse(evidence), parseCsv(mapping).map(row =>
         ({ id: row.id, uuid: row.uuid, directory: row.directory })), entry, config);
     }
-    const geometry = await ds.fetchText(projectGeometryPath({ level: entry.level, table: 'space' }));
-    const features: { properties?: { id?: unknown; redundant?: boolean }; geometry?: { type?: string } }[] =
-      geometry ? JSON.parse(geometry).features ?? [] : [];
-    const missingContours = new Set(result.candidates.flatMap(candidate => candidate.rooms).filter(room => {
-      const matches = features.filter(feature => String(feature.properties?.id) === room.elementId);
-      return matches.length !== 1 || matches[0].geometry?.type !== 'Polygon' || matches[0].properties?.redundant === true;
-    }).map(room => room.uuid));
+    const missingContours = await findMissingContours(entry.level, result.candidates.flatMap(candidate => candidate.rooms));
     if (request !== doorSequence.current) throw new Error('项目数据已有变动，请重新预览户内房间。');
     setDoorPreview({ ...result, missingContours });
     setInsideUuid(result.candidates.length === 1 ? result.candidates[0].inside.uuid : '');
+  }
+
+  async function findMissingContours(level: string, rooms: { elementId: string; uuid: string }[]) {
+    const geometry = await ds.fetchText(projectGeometryPath({ level, table: 'space' }));
+    const features: { properties?: { id?: unknown; redundant?: boolean }; geometry?: { type?: string } }[] =
+      geometry ? JSON.parse(geometry).features ?? [] : [];
+    return new Set(rooms.filter(room => {
+      const matches = features.filter(feature => String(feature.properties?.id) === room.elementId);
+      return matches.length !== 1 || matches[0].geometry?.type !== 'Polygon' || matches[0].properties?.redundant === true;
+    }).map(room => room.uuid));
   }
 
   function confirmEntrance() {
@@ -271,8 +309,74 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
     const config = applyDoorAssignment(parse(), activeDoorPreview, candidate, unitNumber.trim());
     const missing = candidate.rooms.filter(room => activeDoorPreview.missingContours.has(room.uuid)).length;
     update(json(config));
+    const publicCount = activeDoorPreview.publicSide?.rooms.length ?? 0;
     setDoorNotice({ error: false, text: `已将 ${candidate.rooms.length} 个房间归入 ${unitNumber.trim()} 户。` +
+      (publicCount ? `已确认 ${publicCount} 间共用房间，请在共用区域核对分摊设置。` : '') +
       (missing ? `其中 ${missing} 个房间须补齐可测算轮廓。` : '请在测算前审核边界与计入系数。') });
+  }
+
+  async function previewFloorEntrances(sourceLevel?: string) {
+    setFloorDoorPreview(undefined);
+    const request = ++doorSequence.current;
+    const config = parse();
+    const blocked = blockedDoorRooms(config, currentLevel);
+    const plan: FloorDoorAssignmentPreview = sourceLevel
+      ? previewTransferredFloorDoors(state, sourceLevel, currentLevel, assignedEntranceIds(config, sourceLevel), blocked)
+      : previewFloorDoorAssignments(state, currentLevel, blocked);
+    const owners = new Map(config.selections.filter(item => item.level === currentLevel && item.table === 'space')
+      .map(item => [item.elementId, item.owner]));
+    const usedNumbers = new Set(config.nodes.map(node => node.id));
+    const unitNumbers = new Map<string, string>();
+    for (const { doorId, candidate } of plan.households) {
+      const existing = new Set(candidate.rooms.flatMap(room => owners.get(room.elementId) ?? []));
+      if (existing.size === 1) {
+        unitNumbers.set(doorId, [...existing][0]);
+        continue;
+      }
+      const base = `${currentLevel}-${doorId}`;
+      let unit = base;
+      for (let suffix = 2; usedNumbers.has(unit); suffix++) unit = `${base}-${suffix}`;
+      usedNumbers.add(unit);
+      unitNumbers.set(doorId, unit);
+    }
+    const rooms = [...plan.households.flatMap(item => item.candidate.rooms), ...plan.commonAreas.flatMap(area => area.rooms)];
+    const [missingContours, doorFileBefore] = await Promise.all([findMissingContours(currentLevel, rooms),
+      plan.transfer && ds.fetchText(`${currentLevel}/door.csv`)]);
+    if (doorFileBefore === null) throw new Error('无法读取目标楼层门表。');
+    if (request !== doorSequence.current) throw new Error('项目数据已有变动，请重新预览本层分户。');
+    setFloorDoorPreview({ snapshot: state, plan, unitNumbers, missingContours, doorFileBefore });
+  }
+
+  async function confirmFloorEntrances() {
+    if (!floorDoorPreview || floorDoorPreview.plan.level !== currentLevel) throw new Error('请重新预览本层分户。');
+    const { plan, unitNumbers, doorFileBefore } = floorDoorPreview;
+    const config = applyFloorDoorAssignments(parse(), plan, unitNumbers);
+    const text = json(config);
+    if (plan.transfer) {
+      if (doorFileBefore === undefined) throw new Error('请重新预览跨层归户。');
+      const doorIds = plan.transfer.matches.map(match => match.targetDoorId);
+      const { csv, patches } = stageTransferredDoorMarks(state, plan.level, doorIds);
+      const hasMarks = !!patches.get(plan.level)?.size;
+      await store.save(text, { level: plan.level, before: doorFileBefore, after: hasMarks ? csv : doorFileBefore });
+      const latest = liveSource.current;
+      if (latest.ds !== ds) return;
+      if (hasMarks && latest.currentDocument === currentDocument)
+        dispatch({ type: 'APPLY_LEVEL_EDITS', description: '跨层归户标记入户门', patches });
+      displayConfig(text);
+      setSaveStatus({ text, phase: 'saved' });
+    } else update(text);
+    const commonRooms = plan.commonAreas.reduce((total, area) => total + area.rooms.length, 0);
+    setFloorDoorNotice({ error: false, text: `已确认 ${plan.households.length} 户、${commonRooms} 间公共侧房间。` +
+      (plan.transfer ? `已保存 ${plan.transfer.matches.length} 樘入户门标记。` : '') });
+  }
+
+  function runFloorEntrances(action: () => void | Promise<void>) {
+    return run(async () => {
+      setFloorDoorNotice(undefined);
+      try { await action(); } catch (error) {
+        setFloorDoorNotice({ text: message(error), error: true });
+      }
+    });
   }
 
   function addGroup(form: FormData) {
@@ -335,6 +439,8 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
         setReviewed(false);
         setDoorPreview(undefined);
         setDoorNotice(undefined);
+        setFloorDoorPreview(undefined);
+        setFloorDoorNotice(undefined);
       }
     } catch (error) {
       setOutlineError(message(error));
@@ -400,11 +506,17 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
   const currentSelection = selectedObject();
   const selectedDoor = currentSelection?.level === currentLevel && currentDocument?.levelId === currentLevel &&
     currentDocument.elements.get(currentSelection.elementId)?.tableName === 'door' ? currentSelection : undefined;
+  const floorDoorCount = currentDocument?.levelId === currentLevel
+    ? [...currentDocument.elements.values()].filter(element => element.tableName === 'door' && element.attrs.is_unit_entrance === 'true').length : 0;
+  const automaticDoor = doorSource === 'floor-plan' && selectedDoor &&
+    currentDocument?.elements.get(selectedDoor.elementId)?.attrs.is_unit_entrance === 'true';
   const activeDoorPreview = doorPreview?.entry.level === currentLevel &&
     (!selectedDoor || selectedDoor.elementId === doorPreview.entry.elementId) ? doorPreview : undefined;
   const chosenSide = activeDoorPreview?.candidates.find(candidate => candidate.inside.uuid === insideUuid);
+  const publicSide = activeDoorPreview?.publicSide;
   const doorPrerequisite = !draft ? '请先修正配置 JSON 中的错误。'
-    : !activeDoorPreview ? (selectedDoor ? '请先点击「预览户内房间」。' : '请在当前楼层单独选中一樘入户门，再预览户内房间。')
+    : !activeDoorPreview ? (selectedDoor ? (automaticDoor ? '请先点击「自动规划户内与公共区域」。' : '请先点击「预览户内房间」。')
+      : '请在当前楼层单独选中一樘入户门，再预览户内房间。')
     : !chosenSide ? '请在「选择户内一侧」中选择入户后的第一个房间。'
     : !unitNumber.trim() ? '请填写户号。' : '';
 
@@ -416,6 +528,17 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
     : saveStatus.phase === 'saved' ? '归户及分摊配置已保存到项目文件夹。'
     : saveStatus.phase === 'loaded' ? '已读取项目配置。' : '';
   const outlineUnavailable = !currentDocument || currentDocument.levelId !== currentLevel || state.readonly || !!state.groupEdit;
+
+  useEffect(() => {
+    if (!open || loadedStore !== store || command?.plan.action !== 'editor.transfer-floor-assignment' ||
+        handledTransferCommand.current === command || !command.sourceLevel || busy ||
+        command.level !== currentLevel || currentDocument?.levelId !== command.level) return;
+    handledTransferCommand.current = command;
+    setTransferSourceLevel(command.sourceLevel);
+    if (floorDoorDetails.current) floorDoorDetails.current.open = true;
+    floorDoorDetails.current?.scrollIntoView({ block: 'nearest' });
+    void runFloorEntrances(() => previewFloorEntrances(command.sourceLevel));
+  }, [open, loadedStore, store, command, currentLevel, currentDocument, busy, runFloorEntrances, previewFloorEntrances]);
 
   useEffect(() => {
     if (!open || loadedStore !== store || command?.plan.action !== 'editor.area-workflow' || handledCommand.current === command)
@@ -460,12 +583,14 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
   return (
     <aside id="area-panel" className="area-panel" aria-label="面积测算与分摊" hidden={!open}>
       <header><h2>面积测算与分摊</h2></header>
-      <ShanghaiPropertyArea outlineRevision={outlineRevision} locate={(level, id) => {
+      <ShanghaiPropertyArea outlineRevision={outlineRevision} command={open ? command : undefined}
+        configText={configText} active={open} locate={(level, id) => {
         if (id) locate({ level, elementId: id });
         else if (level !== currentLevel) dispatch({ type: 'SET_LEVEL', levelId: level });
       }} />
       <AreaPalPlan connection={connection} floor={{ id: currentLevel, name: levelNames.get(currentLevel) }}
         busy={busy} canCalculate={reviewed && !!draft?.ruleSource.trim()} canOutline={!outlineUnavailable}
+        property={plan => runWorkspaceCommand({ plan, level: currentLevel })}
         calculate={() => void run(calculate)} openCheck={openCheck} outline={scope => {
           setOutlineScope(scope);
           if (outlineDetails.current) outlineDetails.current.open = true;
@@ -523,6 +648,62 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
           </ul>}
         </div>}
       </details>
+      <details ref={floorDoorDetails}>
+        <summary>本层批量分户</summary>
+        <p>{levelNames.get(currentLevel) ?? currentLevel} · 已标记 {floorDoorCount} 樘入户门</p>
+        <button type="button" disabled={busy || !draft || floorDoorCount < 2}
+          onClick={() => void runFloorEntrances(previewFloorEntrances)}>预览本层分户</button>
+        {floorDoorCount < 2 && !transferSourceLevel && <p>本层批量分户需要至少两樘已标记的入户门，也可选择参照楼层。</p>}
+        <label>参照楼层<select value={transferSourceLevel === currentLevel ? '' : transferSourceLevel} disabled={busy || outlineUnavailable}
+          onChange={event => {
+            doorSequence.current += 1;
+            setTransferSourceLevel(event.target.value);
+            setFloorDoorPreview(undefined);
+            setFloorDoorNotice(undefined);
+          }}>
+          <option value="">请选择参照楼层</option>
+          {project?.levels.filter(level => level.id !== currentLevel).map(level =>
+            <option key={level.id} value={level.id}>{level.name || level.id}</option>)}
+        </select></label>
+        <button type="button" disabled={busy || !draft || outlineUnavailable || !transferSourceLevel || transferSourceLevel === currentLevel}
+          onClick={() => void runFloorEntrances(() => previewFloorEntrances(transferSourceLevel))}>按参照层位置预览</button>
+        {floorDoorPreview?.plan.level === currentLevel && <>
+          {floorDoorPreview.plan.transfer && <ul className="area-parts area-room-preview">
+            {floorDoorPreview.plan.transfer.matches.map(match => <li key={match.targetDoorId}>
+              <button type="button" onClick={() => locate({ level: currentLevel, elementId: match.targetDoorId })}>
+                {levelNames.get(floorDoorPreview.plan.transfer!.sourceLevel)} · {match.sourceDoorId} → {levelNames.get(currentLevel)} · {match.targetDoorId}
+              </button>
+              <small>{match.distanceMetres.toFixed(3)} m</small>
+            </li>)}
+          </ul>}
+          {floorDoorPreview.plan.commonAreas.map((area, index) => <details key={index}>
+            <summary><span className="area-preview-swatch" aria-hidden="true" style={{ backgroundColor: floorColors?.commonAreas[index] }} />公共区 {index + 1} · {area.rooms.length} 间</summary>
+            <p>共同连通的入户门 {area.doorIds.join('、')}</p>
+            <ul className="area-parts area-room-preview">{area.rooms.map(room => <li key={room.uuid}>
+              <button type="button" onClick={() => locate(room)}>{room.name} · {room.elementId}</button>
+            </li>)}</ul>
+          </details>)}
+          {floorDoorPreview.plan.households.map(({ doorId, candidate, commonArea }) => <div key={doorId}>
+            <label><span className="area-preview-swatch" aria-hidden="true" style={{ backgroundColor: floorColors?.households.get(doorId) }} />入户门 {doorId} 的户号<input value={floorDoorPreview.unitNumbers.get(doorId) ?? ''} disabled={busy}
+              onChange={event => {
+                const unit = event.target.value;
+                setFloorDoorPreview(current => current && { ...current, unitNumbers: new Map(current.unitNumbers).set(doorId, unit) });
+                setFloorDoorNotice(undefined);
+              }} /></label>
+            <details>
+              <summary>户内房间 · {candidate.rooms.length} 间 · 连接公共区 {commonArea + 1}</summary>
+              <ul className="area-parts area-room-preview">{candidate.rooms.map(room => <li key={room.uuid}>
+                <button type="button" onClick={() => locate(room)}>{room.name} · {room.elementId}</button>
+              </li>)}</ul>
+            </details>
+          </div>)}
+          {floorDoorPreview.missingContours.size > 0 && <p>{floorDoorPreview.missingContours.size} 间房须在测算前补齐轮廓。</p>}
+          <button type="button" disabled={busy || (!!floorDoorPreview.plan.transfer && outlineUnavailable)}
+            onClick={() => void runFloorEntrances(confirmFloorEntrances)}>{floorDoorPreview.plan.transfer ? '确认标记入户门并归户' : '确认本层分户'}</button>
+        </>}
+        {floorDoorNotice && <p role={floorDoorNotice.error ? 'alert' : 'status'}
+          className={floorDoorNotice.error ? 'area-status area-error' : 'area-status'}>{floorDoorNotice.text}</p>}
+      </details>
       <details ref={doorDetails}>
         <summary>按入户门归户</summary>
         <p>在当前楼层选中入户门，预览与户内一侧相连的房间。</p>
@@ -541,7 +722,7 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
           setDoorNotice(undefined);
         }} /></label>
         <button type="button" disabled={busy || !draft || !selectedDoor}
-          onClick={() => void run(previewEntrance, true)}>预览户内房间</button>
+          onClick={() => void run(previewEntrance, true)}>{automaticDoor ? '自动规划户内与公共区域' : '预览户内房间'}</button>
         {activeDoorPreview && <div>
           <p>入户门 {activeDoorPreview.entry.level} / {activeDoorPreview.entry.elementId}</p>
           {activeDoorPreview.candidates.length > 1 && <label>选择户内一侧<select value={insideUuid}
@@ -554,13 +735,23 @@ function AreaPanel({ open, configText, setConfigText, report, setReport, connect
               {item.inside.name} · {item.inside.elementId}（{item.rooms.length} 间）
             </option>)}
           </select></label>}
+          {publicSide && <>
+            <h3>公共侧 · {publicSide.rooms.length} 间</h3>
+            <p>通向 {publicSide.anchors.map(room => room.name).join('、')}</p>
+            <ul className="area-parts area-room-preview">{publicSide.rooms.map(room =>
+              <li key={room.uuid}><button type="button" onClick={() => locate(room)}>{room.name} · {room.elementId}</button></li>,
+            )}</ul>
+            {publicSide.warnings.map(warning => <p className="area-status" key={warning}>{warning}</p>)}
+            <p>确认后的公共侧房间列为待分摊。</p>
+          </>}
           {chosenSide && <>
+            {publicSide && <h3>户内侧 · {chosenSide.rooms.length} 间</h3>}
             <ul className="area-parts area-room-preview">{chosenSide.rooms.map(room =>
               <li key={room.uuid}><button type="button" onClick={() => locate(room)}>{room.name} · {room.elementId}</button>
                 {activeDoorPreview.missingContours.has(room.uuid) && <small>缺可测算轮廓</small>}</li>,
             )}</ul>
             {chosenSide.warnings.map(warning => <p className="area-status" key={warning}>{warning}</p>)}
-            {doorSource === 'floor-plan' && <p>请核对预览是否包含公共走廊或相邻住户的房间。</p>}
+            {doorSource === 'floor-plan' && <p>请核对户内侧是否包含公共走廊或相邻住户的房间。</p>}
             <p>确认这些房间均属该户。新增分项暂按系数 1 录入，测算前仍需审核。</p>
           </>}
         </div>}

@@ -1,7 +1,8 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { developmentPrompt, parseDevelopmentRequest } from '../web/area/development-request.mts';
+import { launchCodingAgent } from '../web/area/development-agent.mts';
 
 const usage = '用法：node scripts/run-coding-request.mjs <开发任务.json> --preview\n' +
   '或：node scripts/run-coding-request.mjs <开发任务.json> --run <干净的 BIMDown 工作目录>';
@@ -22,8 +23,7 @@ try {
       throw new Error('请指定 BIMDown 仓库的工作目录。');
     if (git('status', '--porcelain', '--untracked-files=normal'))
       throw new Error('工作目录有未提交的改动。请指定一个干净的 BIMDown 工作目录。');
-    const agent = spawn('codex', ['--ask-for-approval', 'never', 'exec', '--sandbox', 'workspace-write', '-C', cwd, '-'],
-      { cwd, stdio: ['pipe', 'inherit', 'inherit'] });
+    const agent = launchCodingAgent(cwd);
     agent.on('error', error => {
       process.stderr.write(`无法启动 Codex：${error.message}\n`);
       process.exitCode = 1;

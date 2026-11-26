@@ -68,6 +68,8 @@ npm run build --workspace=cli
 node cli/dist/cli.js area-shanghai-2022 sample_data/shanghai-property-example -o report.json
 ```
 
+库接口 `inspectShanghaiPropertyArea(reader, planText?)` 使用同一套绑定校验检查版本、适用范围、复核轮廓和共有台账，返回证据缺口或 `ready-for-review`。`executeShanghaiPropertyArea` 检查明确的复核确认与来源后生成分户面积。网页的专项入口复用两者。
+
 当前支持适用上海 2022 版规则的新测算整幢住宅。每户提供套界中心线面积，或使用面积与应计墙体面积的拆分，以及已复核的专有阳台。分项可以来自带来源的实测平方米值或与项目版本绑定的平面轮廓。幢总建筑面积需独立核定，共有余量应与独立共有台账核对。 [专项证据格式](../../../spec/property_area.schema.yaml)
 
 幢总建筑面积扣除各户套内建筑面积和独立使用等审定扣除项后，按各户套内建筑面积比例分摊。报告保留分项依据、原始面积、0.01 m² 采用值、共有台账差额和四舍五入尾差。输入不足或冲突时返回诊断和退出码 1。历史适用性、水平边长取位、第 1.2.3 节限差和多级分摊有待开发。

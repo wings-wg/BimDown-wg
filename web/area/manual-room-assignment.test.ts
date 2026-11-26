@@ -47,4 +47,15 @@ describe('manual room assignment', () => {
     expect(result.nodes).not.toContainEqual(configured.nodes[1]);
     expect(result.selections[1]).toMatchObject({ owner: '102', elementId: 'sp-2', kind: 'usable' });
   });
+
+  it('keeps the planned public side visible until a scoped room is explicitly reassigned', () => {
+    const room = space(1);
+    const draft = { ...empty, commonRoomDrafts: [{ ...room, source: 'entrance plan' }] };
+    expect(listCommonRooms(draft, [room, space(1, 'lv-2')]).map(item => item.room)).toEqual([room]);
+    const withUnit = assignSelectedRooms(draft, [space(3), space(3, 'lv-2')], '101', false);
+    expect(listCommonRooms(withUnit, [room, space(2), space(2, 'lv-2')]).map(item => item.room))
+      .toEqual([room, space(2, 'lv-2')]);
+    expect(() => assignSelectedRooms(draft, [room], '101', false)).toThrow('确认改归');
+    expect(assignSelectedRooms(draft, [room], '101', true).commonRoomDrafts).toEqual([]);
+  });
 });

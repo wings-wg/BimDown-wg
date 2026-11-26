@@ -21,18 +21,23 @@ function copyChanged(from, to) {
   writeFileSync(to, next);
 }
 for (const file of ['AreaWorkspace.tsx', 'AutomaticRooms.tsx', 'UnitRoomList.tsx', 'CommonRoomAllocations.tsx',
+  'unit-list-order.ts', 'unit-list-order.test.ts', 'UnitRoomList.test.tsx',
   'common-room-allocation.ts', 'common-room-allocation.test.ts',
   'ManualRoomAssignment.tsx', 'manual-room-assignment.ts', 'manual-room-assignment.test.ts',
   'area-deletion.ts', 'area-deletion.test.ts', 'project-area-storage.ts', 'project-area-storage.test.ts', 'area.css',
   'ModelQuestionPanel.tsx', 'ModelQuestionSettings.tsx', 'model-qa-evidence.ts', 'model-qa-evidence.test.ts',
   'model-qa-types.ts', 'model-qa.css', 'AreaPalPlan.tsx', 'pal-client.ts', 'pal-intent.ts', 'editor-commands.ts',
-  'DevelopmentFeedback.tsx', 'development-request.mts', 'ShanghaiPropertyArea.tsx'])
+  'DevelopmentFeedback.tsx', 'development-request.mts', 'ShanghaiPropertyArea.tsx', 'PropertyBoundaryReview.tsx',
+  'property-boundary-review.ts', 'property-boundary-review.test.ts', 'property-room-use.ts', 'PropertyRoomUseReview.tsx'])
   copyChanged(join(root, 'web', 'area', file), join(area, file));
 for (const file of ['autoRooms.ts', 'autoRooms.test.ts', 'planDoorAssignment.ts', 'planDoorAssignment.test.ts',
-  'unitRoomView.ts', 'unitRoomView.test.ts', 'measurementOutlines.ts', 'measurementOutlines.test.ts', 'modelQaGeometry.ts'])
+  'unitRoomView.ts', 'unitRoomView.test.ts', 'measurementOutlines.ts', 'measurementOutlines.test.ts', 'modelQaGeometry.ts',
+  'floorAssignmentColors.ts', 'floorAssignmentColors.test.ts'])
   copyChanged(join(root, 'web', 'area', file), join(editor, 'editor', 'src', 'state', file));
+copyChanged(join(root, 'web', 'area', 'FloorAssignmentOverlay.tsx'), join(editor, 'editor', 'src', 'components', 'FloorAssignmentOverlay.tsx'));
 copyChanged(join(root, 'web', 'area', 'folderLoading.test.ts'), join(editor, 'editor', 'src', 'dataSources', 'folderLoading.test.ts'));
-for (const file of ['model-qa-server.ts', 'model-qa-server.test.ts', 'pal-library-server.ts'])
+for (const file of ['model-qa-server.ts', 'model-qa-server.test.ts', 'pal-library-server.ts', 'development-jobs-server.ts',
+  'development-jobs-server.test.ts', 'development-agent.mts'])
   copyChanged(join(root, 'web', 'area', file), join(editor, 'app', file));
 for (const file of ['pruneRoomOutlines.ts', 'pruneRoomOutlines.test.ts'])
   copyChanged(join(root, 'web', 'area', file), join(editor, 'editor', 'src', 'utils', file));
@@ -207,6 +212,9 @@ if (hdrStat.isFile() && hdrStat.size < 128 &&
   copyFileSync(join(editor, 'editor', 'public', 'env.hdr'), hdr);
 }
 edit('editor/src/components/Canvas.tsx', [
+  ["import SVGLayers from './SVGLayers.tsx';",
+    "import SVGLayers from './SVGLayers.tsx';\nimport { FloorAssignmentOverlay } from './FloorAssignmentOverlay.tsx';"],
+  ['        {/* Lightweight overlays', '        <FloorAssignmentOverlay />\n\n        {/* Lightweight overlays'],
   [`    window.addEventListener('bimdown:zoom-fit', onFit);
     return () => window.removeEventListener('bimdown:zoom-fit', onFit);
   }, [applyZoomToFit]);`, `    const onZoomStep = (event: Event) => {
@@ -417,6 +425,18 @@ edit('editor/src/exports.ts', [
     "export { ZOOM_TO_EVENT } from './components/SchedulePanel.tsx';\nexport { generateMeasurementOutlines } from './state/measurementOutlines.ts';"],
   ["export { generateMeasurementOutlines } from './state/measurementOutlines.ts';",
     "export { generateMeasurementOutlines } from './state/measurementOutlines.ts';\nexport { describeRoomBoundaries } from './state/modelQaGeometry.ts';"],
+  ["export { describeRoomBoundaries } from './state/modelQaGeometry.ts';",
+    "export { describeRoomBoundaries } from './state/modelQaGeometry.ts';\nexport { previewFloorDoorAssignments } from './state/planDoorAssignment.ts';"],
+  ["export { previewFloorDoorAssignments } from './state/planDoorAssignment.ts';",
+    "export { previewFloorDoorAssignments } from './state/planDoorAssignment.ts';\nexport { previewTransferredFloorDoors, stageTransferredDoorMarks } from './state/planDoorAssignment.ts';"],
+]);
+edit('editor/src/exports.ts', [
+  ["export { previewTransferredFloorDoors, stageTransferredDoorMarks } from './state/planDoorAssignment.ts';",
+    "export { previewTransferredFloorDoors, stageTransferredDoorMarks } from './state/planDoorAssignment.ts';\nexport { FloorAssignmentPreviewProvider, useFloorAssignmentPreview } from './components/FloorAssignmentOverlay.tsx';\nexport { floorAssignmentColors } from './state/floorAssignmentColors.ts';"],
+]);
+edit('editor/src/exports.ts', [
+  ["export { floorAssignmentColors } from './state/floorAssignmentColors.ts';",
+    "export { floorAssignmentColors } from './state/floorAssignmentColors.ts';\nexport { usePropertyBoundaryPreview } from './components/FloorAssignmentOverlay.tsx';"],
 ]);
 edit('app/vite.config.ts', [
   ["import fs from 'fs'", "import fs from 'fs'\nimport { modelQaPlugin } from './model-qa-server.ts'"],
@@ -427,6 +447,72 @@ edit('app/vite.config.ts', [
 ]);
 edit('editor/src/geometry/pickBoundary.ts', [
   ['\nfunction insidePoint(poly: Point[]): Point | null {', '\nexport function insidePoint(poly: Point[]): Point | null {'],
+]);
+
+edit('editor/src/model/specColumns.generated.ts', [
+  ["'operation', 'hinge_position', 'swing_side', 'type_id'], geojson: [] },\n  door_type:",
+    "'operation', 'hinge_position', 'swing_side', 'is_unit_entrance', 'type_id'], geojson: [] },\n  door_type:"],
+  ["'pinned', 'x', 'y', 'name'], geojson: ['base_offset'] },\n  stair:",
+    "'pinned', 'x', 'y', 'name', 'circulation_use'], geojson: ['base_offset'] },\n  stair:"],
+]);
+edit('editor/src/components/RightPanel.tsx', [
+  ["import { toElementId } from '../model/ids.ts';", "import { toElementId, toLevelId } from '../model/ids.ts';"],
+  ['  const handleChange = (key: string, value: string) => {', `  const selectedLevel = toLevelId(firstId);
+  const editableCurrentInstance = !readonly && editableSelection && state.document?.levelId === state.currentLevel &&
+    (selectedLevel === null || selectedLevel === state.currentLevel);
+
+  const handleChange = (key: string, value: string) => {`],
+  ['        <div className="py-0.5">', `        {isSingleSelection && firstData.tableName === 'door' && (
+          <fieldset className="mx-3 mb-1 flex gap-3 py-1 text-[11px]" disabled={!editableCurrentInstance}>
+            <legend className="text-muted-foreground">{t('prop.entranceRole')}</legend>
+            <label className="flex items-center gap-1">
+              <input type="radio" name="door-entrance-role" checked={csv.is_unit_entrance !== 'true'}
+                onChange={() => handleChange('is_unit_entrance', '')} />
+              {t('prop.ordinaryDoor')}
+            </label>
+            <label className="flex items-center gap-1">
+              <input type="radio" name="door-entrance-role" checked={csv.is_unit_entrance === 'true'}
+                onChange={() => handleChange('is_unit_entrance', 'true')} />
+              {t('prop.unitEntrance')}
+            </label>
+          </fieldset>
+        )}
+        {isSingleSelection && firstData.tableName === 'space' && (
+          <label className="mx-3 mb-1 flex items-center justify-between gap-1 py-1 text-[11px]">
+            {t('prop.circulationUse')}
+            <select className="min-w-0 rounded border border-border bg-background p-1 text-foreground"
+              value={csv.circulation_use ?? ''} disabled={!editableCurrentInstance}
+              onChange={event => handleChange('circulation_use', event.target.value)}>
+              <option value="">{t('prop.useRoomName')}</option>
+              <option value="stairwell">{t('prop.stairwell')}</option>
+              <option value="elevator_lobby">{t('prop.elevatorLobby')}</option>
+              <option value="other">{t('prop.otherRoomUse')}</option>
+            </select>
+          </label>
+        )}
+        <div className="py-0.5">`],
+]);
+edit('editor/src/i18n/zh.json', [
+  ['  "levels.copySelectionHere":', `  "prop.entranceRole": "门用途",
+  "prop.ordinaryDoor": "普通门",
+  "prop.unitEntrance": "入户门",
+  "prop.circulationUse": "交通空间用途",
+  "prop.useRoomName": "按房间名称",
+  "prop.stairwell": "楼梯间",
+  "prop.elevatorLobby": "电梯间",
+  "prop.otherRoomUse": "其他房间",
+  "levels.copySelectionHere":`],
+]);
+edit('editor/src/i18n/en.json', [
+  ['  "levels.copySelectionHere":', `  "prop.entranceRole": "Door use",
+  "prop.ordinaryDoor": "Ordinary",
+  "prop.unitEntrance": "Dwelling entrance",
+  "prop.circulationUse": "Circulation use",
+  "prop.useRoomName": "Use room name",
+  "prop.stairwell": "Stairwell",
+  "prop.elevatorLobby": "Elevator lobby",
+  "prop.otherRoomUse": "Other room",
+  "levels.copySelectionHere":`],
 ]);
 
 edit('editor/src/dataSources/fileSystem.ts', [

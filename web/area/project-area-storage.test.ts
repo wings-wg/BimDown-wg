@@ -92,4 +92,25 @@ describe('project area storage', () => {
     expect(() => store.save('{}')).toThrow('版本 1');
     expect(saveFile).not.toHaveBeenCalled();
   });
+
+  it('checks the target door snapshot and restores it if saving transferred room assignments fails', async () => {
+    const path = 'lv-2/door.csv';
+    const marks = { level: 'lv-2', before: 'id,is_unit_entrance\nd-1,', after: 'id,is_unit_entrance\nd-1,true' };
+    const { dataSource } = createMemoryDataSource(new Map([[path, marks.before]]));
+    const saveFile = vi.fn(dataSource.saveFile).mockImplementationOnce(dataSource.saveFile)
+      .mockRejectedValueOnce(new Error('Configuration write rejected'));
+    const store = getProjectAreaStore({ ...dataSource, saveFile });
+    await store.load();
+    const text = JSON.stringify(firstUnit);
+    await expect(store.save(text, marks)).rejects.toThrow('Configuration write rejected');
+    expect(await dataSource.fetchText(path)).toBe(marks.before);
+    expect(await dataSource.fetchText(AREA_CONFIG_PATH)).toBeNull();
+    await dataSource.saveFile(path, 'external door change');
+    await expect(store.save(text, marks)).rejects.toThrow('门表已变化');
+    expect(await dataSource.fetchText(path)).toBe('external door change');
+    await dataSource.saveFile(path, marks.before);
+    await store.save(text, marks);
+    expect(await dataSource.fetchText(path)).toBe(marks.after);
+    expect(await store.load()).toBe(text);
+  });
 });

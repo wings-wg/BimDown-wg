@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { zipSync, strToU8 } from 'fflate';
 import { describe, expect, it } from 'vitest';
-import { executeShanghaiPropertyArea, type ShanghaiPropertyPlan } from './shanghai-property.js';
+import { executeShanghaiPropertyArea, inspectShanghaiPropertyArea, type ShanghaiPropertyPlan } from './shanghai-property.js';
 import { calculateShanghaiPropertyProject } from './project.js';
 
 const dir = fileURLToPath(new URL('../../../sample_data/shanghai-property-example/', import.meta.url));
@@ -44,6 +44,24 @@ describe('Shanghai 2022 reviewed single-building difference method', () => {
     expect(await run(data, { ...input, business: { ...input.business, type: 'historical-prediction' } }))
       .toMatchObject({ diagnostics: [{ kind: 'unsupported', field: 'business' }] });
     expect(await run(data, input, false)).toMatchObject({ diagnostics: [{ kind: 'needs-review', field: 'review' }] });
+  });
+
+  it('checks the same evidence and ledger before approval without producing any allocation', async () => {
+    const data = files();
+    const read = (path: string) => data.get(path);
+    const draft = { ...parse(data), review: { confirmed: false, source: '' } };
+    const check = (input: object) => inspectShanghaiPropertyArea(read, JSON.stringify(input));
+    const ready = await check(draft);
+    expect(ready).toMatchObject({ status: 'ready-for-review', unitCount: 2, hasReviewSource: false });
+    expect(ready).not.toHaveProperty('units');
+    expect(ready).not.toHaveProperty('reconciliation');
+    expect(await run(data, draft)).toMatchObject({ status: 'input-incomplete', diagnostics: [{ field: 'review' }] });
+    expect(await check({ ...draft, deductions: [] })).toMatchObject({ diagnostics: [{ kind: 'conflict', field: 'common' }] });
+    expect(await check({ ...draft, modelRevision: 'old' })).toMatchObject({ diagnostics: [{ field: 'modelRevision' }] });
+    data.delete('lv-1/property_boundary.geojson');
+    expect(await check(draft)).toMatchObject({ diagnostics: [{ kind: 'missing-data', field: 'lv-1/property_boundary.geojson' }] });
+    data.delete('property_area.json');
+    expect(await inspectShanghaiPropertyArea(read)).toMatchObject({ diagnostics: [{ field: 'property_area.json' }, {}, {}] });
   });
 
   it('rejects conflicting ledger, beneficiary scope and reuse of a boundary', async () => {

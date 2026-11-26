@@ -9,13 +9,16 @@ export function assignSelectedRooms(config: ProjectAreaConfig, rooms: RoomRefere
   const selections = [...config.selections];
   const removedPools = new Set<string>();
   const partIds = new Set([...selections, ...(config.parts ?? [])].map(part => part.id));
-  for (const room of new Map(rooms.map(room => [roomKey(room), room])).values()) {
-    const matches = config.selections.filter(item => item.table === 'space' && roomKey(item) === roomKey(room));
+  const requested = new Map(rooms.map(room => [roomKey(room), room]));
+  const commonDraftKeys = new Set(config.commonRoomDrafts?.map(roomKey));
+  for (const [key, room] of requested) {
+    const matches = config.selections.filter(item => item.table === 'space' && roomKey(item) === key);
     if (matches.length > 1) throw new Error(`房间 ${room.name} 有重复归属，请先核对配置。`);
     const previous = matches[0];
     const path = `${room.level}/space/${room.elementId}`;
     const source = `网页手动归户；房间 ${path}；户号 ${owner.id}；测算边界与系数待审核`;
     if (!previous) {
+      if (commonDraftKeys.has(key) && !confirmMove) throw new Error(`房间 ${room.name} 已标为共用，请勾选确认改归。`);
       if (partIds.has(path)) throw new Error(`分项 ID ${path} 已存在，请核对配置。`);
       partIds.add(path);
       selections.push({
@@ -46,6 +49,7 @@ export function assignSelectedRooms(config: ProjectAreaConfig, rooms: RoomRefere
   }
   const nodes = config.nodes.filter(node => !removedPools.has(node.id));
   return { ...config, confirmed: false, selections,
+    ...(config.commonRoomDrafts && { commonRoomDrafts: config.commonRoomDrafts.filter(room => !requested.has(roomKey(room))) }),
     nodes: nodes.includes(owner) ? nodes : [...nodes, owner],
     groups: config.groups.filter(group => !removedPools.has(group.pool)),
   };

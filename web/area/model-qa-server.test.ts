@@ -9,6 +9,7 @@ import { MODEL_QA_SESSION_HEADER } from './src/area/model-qa-types.ts';
 import { createPalLibrary } from './pal-library-server.ts';
 import { parsePalIntent } from './src/area/pal-intent.ts';
 import { editorCommands, editorIntentHasGroundedTarget, localEditorIntent, matchEditorLevel, resolveDeleteIds } from './src/area/editor-commands.ts';
+import { localDevelopmentDraft, parseDevelopmentRequest } from './src/area/development-request.mts';
 import { readCandidatePackage } from './src/check/pal-candidate-package.ts';
 import { toolId, verifyToolRecipe, type ToolRecipe } from './src/check/core/tool-recipes.ts';
 
@@ -154,12 +155,29 @@ describe('model question gateway', () => {
         const plan = localEditorIntent(example);
         expect(plan, example).toMatchObject({ action });
         expect(parsePalIntent(plan, 'question')).toEqual(plan);
-        expect(parsePalIntent(plan, 'area')).toBeUndefined();
+        expect(parsePalIntent(plan, 'area')).toEqual(action === 'editor.property-area' ? plan : undefined);
       }
     }
     for (const question of ['F2 有多少房间？', '概况包括哪些楼层', '如何运行模型核查', '切换到哪一层', '显示所有楼层的面积'])
       expect(localEditorIntent(question), question).toBeUndefined();
     expect(parsePalIntent({ action: 'editor.go-level', target: 'F2', command: 'delete' }, 'question')).toBeUndefined();
+    const transfer = { action: 'editor.transfer-floor-assignment', source: 'F2', target: 'F3' } as const;
+    expect(parsePalIntent(transfer, 'question')).toEqual(transfer);
+    expect(localEditorIntent('按F2相同的位置对F3进行归户')).toEqual({ ...transfer, source: 'f2', target: 'f3' });
+    expect(editorIntentHasGroundedTarget(transfer, '参照F2的分户，把F3也按门位置归一遍')).toBe(true);
+    expect(editorIntentHasGroundedTarget(transfer, '参照F2的分户，把F4也按门位置归一遍')).toBe(false);
+    expect(editorIntentHasGroundedTarget({ ...transfer, source: 'F3', target: 'F2' }, '按F2相同的位置对F3进行归户')).toBe(false);
+    expect(parsePalIntent({ ...transfer, target: ' f2 ' }, 'question')).toBeUndefined();
+    const task = { format: 'bimdown.development-request', version: 1, module: 'area', title: '显示门编号',
+      current: '打开归户预览。', desired: '显示门编号。', acceptance: '在预览中核对编号。', constraints: '' };
+    expect(parsePalIntent({ action: 'development.draft', task }, 'question')).toEqual({ action: 'development.draft', task });
+    expect(parsePalIntent({ action: 'development.draft', task, run: true }, 'question')).toBeUndefined();
+    expect(parsePalIntent({ action: 'development.draft', task: { ...task, command: 'unexpected' } }, 'question')).toBeUndefined();
+    expect(parsePalIntent({ action: 'development.draft', task }, 'development')).toEqual({ action: 'development.draft', task });
+    expect(parsePalIntent({ action: 'model.query', scope: 'question' }, 'development')).toBeUndefined();
+    const desired = '本层批量分户中，预览本层分户，应将分户后不同户及公共区域以不同颜色显示。';
+    expect(parseDevelopmentRequest(localDevelopmentDraft(`**系统改进：${desired}**`)).desired).toBe(desired);
+    expect(parseDevelopmentRequest(localDevelopmentDraft(`**系统改进：**${desired}`)).desired).toBe(desired);
     expect(parsePalIntent({ action: 'editor.zoom-view', direction: 'out', factor: 20 }, 'question')).toBeUndefined();
   });
 
@@ -194,6 +212,23 @@ describe('model question gateway', () => {
     const messages = JSON.parse(String(provider.mock.calls[0][1]?.body)).messages;
     expect(JSON.parse(messages[1].content)).toEqual({ text });
     expect((await invoke(handler, 'POST', { channel: 'question', text }, {}, '/pal/intent')).code).toBe(502);
+    expect((await invoke(handler, 'POST', { channel: 'area', text }, {}, '/pal/intent')).code).toBe(502);
+  });
+
+  it('routes the Shanghai property workflow from both entrances without authorizing calculation or forwarding evidence', async () => {
+    let proposal: object = { action: 'editor.property-area', task: 'allocate' };
+    const provider = vi.fn<typeof fetch>().mockImplementation(async () =>
+      Response.json({ choices: [{ message: { content: JSON.stringify(proposal) } }] }));
+    const handler = createModelQaHandler(configured, provider);
+    const text = '准备按上海2022版复算整幢住宅的房产面积';
+    for (const channel of ['area', 'question']) {
+      expect(await invoke(handler, 'POST', { channel, text, evidence: ['model geometry'], confirmed: true }, {}, '/pal/intent'))
+        .toEqual({ code: 200, data: { plan: proposal } });
+    }
+    const messages = JSON.parse(String(provider.mock.calls[0][1]?.body)).messages;
+    expect(messages[0].content).toContain('先检查复核证据，再由用户审核后运行');
+    expect(JSON.parse(messages[1].content)).toEqual({ text });
+    proposal = { action: 'editor.property-area', task: 'allocate', confirmed: true };
     expect((await invoke(handler, 'POST', { channel: 'area', text }, {}, '/pal/intent')).code).toBe(502);
   });
 

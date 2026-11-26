@@ -1,6 +1,7 @@
 import { useEffect, useState, type Ref } from 'react';
 import { unitRoomView, useEditorDispatch, useEditorState, ZOOM_TO_EVENT } from 'bimdown-editor';
 import type { ProjectAreaConfig } from './core/project-input.js';
+import { orderAssignedUnits } from './unit-list-order.js';
 
 type SelectionRequest = { levelId: string; rooms: ReadonlySet<string> };
 
@@ -84,7 +85,7 @@ export function UnitRoomList({ draft, sectionRef, busy, remove }: {
       {units.size === 0 ? <p className="area-status">
         {draft ? '确认批量归户后，户号和房间数会显示在这里。' : '修正配置 JSON 后可查看已归户房间。'}
       </p> : <ul className="area-unit-list">
-        {[...units].map(([unitId, levels]) => {
+        {orderAssignedUnits(units, state.project?.levels ?? []).map(([unitId, levels]) => {
           const count = [...levels.values()].reduce((total, rooms) => total + rooms.size, 0);
           return <li key={unitId}>
             <button type="button" aria-pressed={activeUnit === unitId} disabled={!count}

@@ -1,9 +1,10 @@
 type Definition = {
   field?: string;
+  fields?: readonly string[];
   values?: readonly string[] | 'level-name' | 'element-target';
   syntax: string;
   examples: readonly string[];
-  match: (request: string) => string | true | undefined;
+  match: (request: string) => string | true | Record<string, string> | undefined;
 };
 
 const scope = (text: string) => /^(?:本项目)?(?:全部楼层|所有楼层|各楼层|每个楼层|全楼|整栋)$/.test(text) ? 'project'
@@ -157,6 +158,24 @@ export const editorCommands = {
       return requested ? `outlines-${requested}` : undefined;
     },
   },
+  'editor.property-area': {
+    field: 'task', values: ['inspect', 'allocate'],
+    syntax: '上海 2022 版整幢住宅房产面积专项。inspect 只读取选用项目的逐层模型候选证据。allocate 为整幢新测算按差额法复算，先检查复核证据，再由用户审核后运行。部分楼层、跨幢、多级分摊和历史项目应返回 blocked。',
+    examples: ['提取房产面积候选证据', '运行上海2022版单幢房产面积复算'],
+    match: (r: string) => {
+      if (/^(?:提取|读取)房产面积(?:模型)?候选证据$/.test(r)) return 'inspect';
+      if (/^(?:运行|执行)上海2022版单幢房产面积复算$/.test(r)) return 'allocate';
+    },
+  },
+  'editor.transfer-floor-assignment': {
+    fields: ['source', 'target'],
+    syntax: '把参照层已归户入户门的位置投影到目标层，以目标层的门和房间连通关系准备批量归户预览。source 是参照楼层，target 是目标楼层，两者都逐字引用当前请求中的楼层指代。保存由用户在预览中确认。',
+    examples: ['按F2相同的位置对F3进行归户'],
+    match: (r: string) => {
+      const pair = /^(?:按|按照|参照|参考)([\p{L}\p{N}_-]+?)(?:的)?(?:相同的位置|相同位置|入户门位置|归户结果|归户)(?:对|给|为)([\p{L}\p{N}_-]+?)(?:进行|自动|重新|批量)?(?:归户|分户)$/u.exec(r);
+      return pair ? { source: pair[1], target: pair[2] } : undefined;
+    },
+  },
   'editor.run-check': {
     syntax: '对核查面板当前加载并审核的条款运行核查。',
     examples: ['运行模型核查'],
@@ -171,25 +190,32 @@ export const editorCommands = {
 
 type Commands = typeof editorCommands;
 type CommandAction = keyof Commands;
-type Args<Entry> = Entry extends { field: infer Key extends string; values: infer Values }
+type Args<Entry> = Entry extends { fields: readonly (infer Key extends string)[] } ? Record<Key, string>
+  : Entry extends { field: infer Key extends string; values: infer Values }
   ? { [K in Key]: Values extends readonly (infer Value)[] ? Value : string } : Record<never, never>;
 export type EditorIntent = { [K in CommandAction]: { action: K } & Args<Commands[K]> }[CommandAction];
 export type WorkspacePanel = Extract<EditorIntent, { action: 'editor.open-panel' }>['panel'];
-export type WorkspaceCommand = Extract<EditorIntent, { action: 'editor.run-check' | 'editor.area-workflow' }>;
-export type WorkspaceCommandRequest = { plan: WorkspaceCommand; level: string };
+export type PropertyAreaIntent = Extract<EditorIntent, { action: 'editor.property-area' }>;
+export type WorkspaceCommand = Extract<EditorIntent, { action: 'editor.run-check' | 'editor.area-workflow' | 'editor.transfer-floor-assignment' }> | PropertyAreaIntent;
+export type WorkspaceCommandRequest = { plan: WorkspaceCommand; level: string; sourceLevel?: string };
 
 const normalize = (text: string) => text.normalize('NFKC').toLowerCase().replace(/\s/g, '');
 const commands = Object.entries(editorCommands) as [CommandAction, Definition][];
 export const editorCommandExamples = commands.flatMap(([, command]) => [...command.examples]);
-export const editorCommandPrompt = commands.map(([action, command]) => {
+function describeEditorCommand([action, command]: [CommandAction, Definition]): string {
+  if (command.fields) return `${action}，参数 ${command.fields.join('、')}。${command.syntax}`;
   const args = command.field ? `，参数 ${command.field}` : '';
   if (Array.isArray(command.values)) return `${action}${args} 为 ${command.values.join(' / ')}。${command.syntax}`;
   if (command.values === 'level-name') return `${action}${args} 为原文中的楼层指代。${command.syntax}`;
   return `${action}${args}。${command.syntax}`;
-});
+}
+export const editorCommandPrompt = commands.map(describeEditorCommand);
+export const propertyAreaCommandPrompt = describeEditorCommand(['editor.property-area', editorCommands['editor.property-area']]);
 export function isEditorIntent(value: { action: string } | undefined): value is EditorIntent {
   return value !== undefined && Object.hasOwn(editorCommands, value.action);
 }
+const validLevelReference = (value: unknown): value is string =>
+  typeof value === 'string' && !!value.trim() && value.length <= 80 && !/[\r\n?？]/.test(value);
 
 export function parseEditorIntent(value: unknown): EditorIntent | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -197,11 +223,16 @@ export function parseEditorIntent(value: unknown): EditorIntent | undefined {
   if (typeof plan.action !== 'string' || !Object.hasOwn(editorCommands, plan.action)) return undefined;
   const action = plan.action as CommandAction;
   const command: Definition = editorCommands[action];
+  if (action === 'editor.transfer-floor-assignment') {
+    const { source, target } = plan;
+    return Object.keys(plan).length === 3 && validLevelReference(source) && validLevelReference(target) &&
+      normalize(source) !== normalize(target) ? { action, source, target } : undefined;
+  }
   if (!command.field) return Object.keys(plan).length === 1 ? { action } as EditorIntent : undefined;
   const parameter = plan[command.field];
   if (Object.keys(plan).length !== 2 || typeof parameter !== 'string') return undefined;
   if (command.values === 'level-name') {
-    if (!parameter.trim() || parameter.length > 80 || /[\r\n?？]/.test(parameter)) return undefined;
+    if (!validLevelReference(parameter)) return undefined;
   } else if (command.values === 'element-target') {
     if (parameter !== 'selected' && !(parameter.startsWith('id:') && parameter.length <= 83 && elementIdPattern.test(parameter.slice(3))) &&
         !(parameter.startsWith('table:') && Object.values<string>(deletionTables).includes(parameter.slice(6)))) return undefined;
@@ -219,7 +250,8 @@ export function localEditorIntent(text: string): EditorIntent | undefined {
   const matched = commands.flatMap(([action, command]) => {
     const argument = command.match(request);
     if (!argument) return [];
-    const plan = parseEditorIntent(command.field ? { action, [command.field]: argument } : { action });
+    const plan = parseEditorIntent(typeof argument === 'object' ? { action, ...argument } :
+      command.field ? { action, [command.field]: argument } : { action });
     return plan ? [plan] : [];
   });
   return matched.length === 1 ? matched[0] : undefined;
@@ -228,8 +260,18 @@ export function localEditorIntent(text: string): EditorIntent | undefined {
 /** Only check the floor reference here. The language model interprets the surrounding request. */
 export function editorIntentHasGroundedTarget(plan: EditorIntent, text: string): boolean {
   if (plan.action === 'editor.delete') return deletionTarget(commandText(text)) === plan.target;
+  if (plan.action === 'editor.transfer-floor-assignment') {
+    const explicit = localEditorIntent(text);
+    if (explicit?.action === plan.action && (normalize(explicit.source) !== normalize(plan.source) ||
+        normalize(explicit.target) !== normalize(plan.target))) return false;
+    return groundedLevelReference(plan.source, text) && groundedLevelReference(plan.target, text);
+  }
   if (!('target' in plan)) return true;
-  const target = normalize(plan.target);
+  return groundedLevelReference(plan.target, text);
+}
+
+function groundedLevelReference(reference: string, text: string) {
+  const target = normalize(reference);
   if (!target) return false;
   const token = [...target].map(character => character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
   const leading = /^[\d零〇一二两三四五六七八九十百千]/.test(target) ? '(?<![a-z0-9_零〇一二两三四五六七八九十百千负-]|地下)'

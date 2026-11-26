@@ -64,6 +64,7 @@
 .area-room-preview { max-height: 15rem; overflow: auto; }
 .area-room-preview li { padding-inline-end: 0.35rem; }
 .area-door-confirm { margin-top: 0.55rem; }
+.development-job pre { max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.75rem; }
 .area-units { margin-block: 0.75rem; border-top: 1px solid var(--panel-border, #c0cbd0); padding-top: 0.65rem; }
 .area-unit-list { margin-block: 0.35rem; padding: 0; list-style: none; max-height: 13rem; overflow: auto; }
 .area-unit-list li + li { margin-top: 0.3rem; }
@@ -91,4 +92,14 @@
 
 @media (max-width: 760px) {
   .area-panel { position: absolute; inset: 6.1rem 0 0 auto; z-index: 42; width: min(23rem, 90%); padding-top: 1rem; }
+}
+
+.area-preview-swatch {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-right: 0.4em;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  vertical-align: middle;
 }

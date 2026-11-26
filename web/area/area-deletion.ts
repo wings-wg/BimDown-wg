@@ -4,7 +4,8 @@ import { roomKey, type RoomReference } from './common-room-allocation.js';
 export function removeAreaRooms(config: ProjectAreaConfig, rooms: RoomReference[]): ProjectAreaConfig {
   const ids = new Set(rooms.map(roomKey));
   const removed = config.selections.filter(item => item.table === 'space' && ids.has(roomKey(item)));
-  if (!removed.length) return config;
+  const commonRoomDrafts = config.commonRoomDrafts?.filter(room => !ids.has(roomKey(room)));
+  if (!removed.length && commonRoomDrafts?.length === config.commonRoomDrafts?.length) return config;
 
   const removedSet = new Set(removed);
   const selections = config.selections.filter(item => !removedSet.has(item));
@@ -15,6 +16,7 @@ export function removeAreaRooms(config: ProjectAreaConfig, rooms: RoomReference[
     !remainingOwners.has(node.id) && !recipients.has(node.id)).map(node => node.id));
   return {
     ...config, confirmed: false, selections,
+    ...(commonRoomDrafts && { commonRoomDrafts }),
     nodes: config.nodes.filter(node => !emptyPools.has(node.id)),
     groups: config.groups.filter(group => !emptyPools.has(group.pool)),
   };
