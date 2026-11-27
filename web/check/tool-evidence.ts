@@ -9,8 +9,9 @@ export const TOOL_EVIDENCE_PATH = 'engineering_evidence.json';
 type Reader = Pick<DataSource, 'fetchText'>;
 type ObjectRef = EngineeringDatum['object'];
 type Target = ScalarEvidenceSet['targets'][number];
-type Applicable = Target['applicability'][number] & { object: ObjectRef; applicability: string };
-type Fact = ToolMeasurement & { object: ObjectRef; concept: string };
+type Applicable = Target['applicability'][number] & { object: ObjectRef; applicability: string;
+  dwellingCountBasis?: unknown; windowKind?: unknown };
+type Fact = ToolMeasurement & { object: ObjectRef; concept: string; windowSillBasis?: unknown };
 export const objectId = ({ scope, table, id }: ObjectRef) => JSON.stringify([scope, table, id]);
 const validRef = (value: ObjectRef | undefined) => value && [value.scope, value.table, value.id].every(textPresent) &&
   !/[/\\:\0]/.test(value.scope) && !['.', '..'].includes(value.scope);
@@ -51,10 +52,12 @@ export function parseEvidence(text: string | null, projectRevision?: string) {
   const clearHeightAreas = new Map<string, ClearHeightAreas>();
   const observations = new Map<string, Observation>();
   const empty = { facts, duplicate, applicability, classifications, clearHeightAreas, observations };
-  if (!text) return { ...empty, spaceRelations: undefined, roomExport: undefined };
+  if (!text) return { ...empty, spaceRelations: undefined, roomExport: undefined, stairHeadroomCoverage: undefined,
+    dwellingInventory: undefined, windowGuards: undefined };
   const value = JSON.parse(text) as { version?: number; modelRevision?: string; measurements?: Fact[];
     applicability?: Applicable[]; doorUses?: DoorUseEvidence[]; clearHeightAreas?: ClearHeightAreas[];
-    spaceRelations?: unknown; observations?: unknown; roomExport?: unknown };
+    spaceRelations?: unknown; observations?: unknown; roomExport?: unknown; stairHeadroomCoverage?: unknown;
+    dwellingInventory?: unknown; windowGuards?: unknown };
   if (value?.version !== 1 || !Array.isArray(value.measurements) || !Array.isArray(value.applicability) ||
       (value.doorUses !== undefined && !Array.isArray(value.doorUses)) ||
       (value.clearHeightAreas !== undefined && !Array.isArray(value.clearHeightAreas)) ||
@@ -114,7 +117,8 @@ export function parseEvidence(text: string | null, projectRevision?: string) {
       observations.set(key, { ...observation, modelFacts: facts && typeof facts === 'object' && !Array.isArray(facts) ? facts : null });
     }
   }
-  return { ...empty, spaceRelations: value.spaceRelations, roomExport: readRoomExport(value.roomExport) };
+  return { ...empty, spaceRelations: value.spaceRelations, roomExport: readRoomExport(value.roomExport),
+    stairHeadroomCoverage: value.stairHeadroomCoverage, dwellingInventory: value.dwellingInventory, windowGuards: value.windowGuards };
 }
 
 export function toolDataContract(recipe: ToolRecipe) {
@@ -156,11 +160,32 @@ export async function readScopedToolMeasurements(ds: Reader, tool: ToolEntry, ob
   });
 }
 
-export async function readToolEvidence(ds: Reader, levels: { id: string; name: string }[], items: CheckItem[], metadata: string | null, text: string | null) {
-  const tables = [...new Set(items.map(item => item.rule?.targetTable ?? 'door'))];
+export async function readScopedObjectRows(ds: Reader, levels: { id: string; name: string }[], tables: readonly string[]) {
   const sources = await Promise.all(levels.flatMap(level => tables.map(async table => ({
       level, table, text: await ds.fetchText(`${level.id}/${table}.csv`),
     }))));
+  const objects = new Map<string, { object: ObjectRef; name: string }>();
+  const ambiguous = new Set<string>();
+  const missingIds = new Set<string>();
+  for (const { level, table, text: csv } of sources) {
+    if (!csv) continue;
+    for (const row of parseCsv(csv.replace(/^\uFEFF/, ''))) {
+      if (!textPresent(row.id)) {
+        missingIds.add(`${level.id}/${table}.csv`);
+        continue;
+      }
+      const object = { scope: level.id, table, id: row.id };
+      const key = objectId(object);
+      if (objects.has(key)) ambiguous.add(key);
+      objects.set(key, { object, name: `${level.name} · ${row.name || row.number || row.id}` });
+    }
+  }
+  return { sources, objects, ambiguous, missingIds };
+}
+
+export async function readToolEvidence(ds: Reader, levels: { id: string; name: string }[], items: CheckItem[], metadata: string | null, text: string | null) {
+  const tables = [...new Set(items.map(item => item.rule?.targetTable ?? 'door'))];
+  const { sources, objects, ambiguous } = await readScopedObjectRows(ds, levels, tables);
   let parsed: ReturnType<typeof parseEvidence>;
   let evidenceError = text ? undefined : `当前 BIMDown 缺少 ${TOOL_EVIDENCE_PATH}。请补充已确认的适用性和量测来源。`;
   try {
@@ -171,23 +196,12 @@ export async function readToolEvidence(ds: Reader, levels: { id: string; name: s
     parsed = parseEvidence(null);
     evidenceError = error instanceof Error ? error.message : '证据文件无效。';
   }
-  const objects = new Map<string, { object: ObjectRef; name: string }>();
-  const ambiguous = new Set<string>();
-  for (const { level, table, text: csv } of sources) {
-    if (!csv) continue;
-    for (const row of parseCsv(csv.replace(/^\uFEFF/, ''))) {
-      if (!textPresent(row.id)) continue;
-      const object = { scope: level.id, table, id: row.id };
-      const key = objectId(object);
-      if (objects.has(key)) ambiguous.add(key);
-      objects.set(key, { object, name: `${level.name} · ${row.name || row.number || row.id}` });
-    }
-  }
   if (objects.size * items.length > 20_000)
     throw new Error('工具核查对象超过 20,000 项，请拆分规则文件。');
 
   return {
     snapshot: JSON.stringify([text, sources]),
+    sources,
     cases: items.map(item => {
       const rule = item.rule ?? item.doorWidthRule!;
       const targetTable = item.rule?.targetTable ?? 'door';

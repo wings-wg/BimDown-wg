@@ -55,6 +55,23 @@ export function buildExportFeedback(items: CheckItem[], results: { ruleId: strin
       fields: ['spaceRelations.levelPairs', 'spaceRelations.footprints', '逐对象适用性', '平面坐标基准', '有效闭合轮廓和洞口'],
       advice: '复核上下层对应关系、下层房间清单与用途的完整性、统一坐标和轮廓来源后重导。',
       scope: { ruleId: item.overlapRule.id, ruleVersion: item.overlapRule.version, applicability: item.overlapRule.applicability } }];
+    if (item.componentMinimumRule) return [{ ...base, files: ['global/level.csv', '<楼层>/stair.csv', '<楼层>/stair_run.csv',
+      '<楼层>/stair_landing.csv', 'project_metadata.json', 'engineering_evidence.json'],
+      fields: ['楼层与构件 ID', 'host_id', '逐对象适用性', 'stair.flight-minimum-headroom', 'stair.landing-minimum-headroom',
+        'stairHeadroomCoverage', 'measurementGroup / location', '量测单位及来源'],
+      advice: '逐实体梯段和平台导出，同层绑定宿主楼梯。若是多层重复楼梯，需逐实例形成构件记录。提供从步行基面至上方限制面的最低垂直净高，并确认结构、风管和其他管线障碍覆盖。',
+      scope: { ruleId: item.componentMinimumRule.id, ruleVersion: item.componentMinimumRule.version,
+        applicability: item.componentMinimumRule.applicability } }];
+    if (item.dwellingMinimumRule) return [{ ...base, files: ['project_metadata.json', 'engineering_evidence.json'],
+      fields: ['project_number', 'dwellingInventory', 'applicability.dwellingCountBasis'],
+      advice: '提供整项目范围与独立核定总户数，以幢号和户号逐户记录已确认的无障碍分类及来源。按规则版本复核适用的配建依据、最低套数和比例。',
+      scope: { ruleId: item.dwellingMinimumRule.id, ruleVersion: item.dwellingMinimumRule.version,
+        applicability: item.dwellingMinimumRule.applicability } }];
+    if (item.conditionalRequirementRule) return [{ ...base, files: ['<楼层>/window.csv', 'project_metadata.json', 'engineering_evidence.json'],
+      fields: ['逐外窗适用性和 windowKind', 'window.sill-clear-height', 'windowSillBasis', 'measurementGroup', 'windowGuards'],
+      advice: '以室内完成地面为普通外窗和落地窗的起算面，飘窗核对可踏面。低窗台需补同部位已复核的防护设置状态和来源。',
+      scope: { ruleId: item.conditionalRequirementRule.id, ruleVersion: item.conditionalRequirementRule.version,
+        applicability: item.conditionalRequirementRule.applicability } }];
     return [];
   });
 }

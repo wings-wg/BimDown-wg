@@ -17,6 +17,13 @@ export const blockerLabels = {
   'confirm-door-use': '门用途、开启角或测线待确认',
   'confirm-height-areas': '同一使用面积边界和限值下面积待确认',
   'confirm-space-relations': '房间用途、跨层配对或下层清单待确认',
+  'confirm-stair-component': '楼梯实体部位或宿主待确认',
+  'confirm-stair-obstructions': '净空测点及结构和管线障碍覆盖待确认',
+  'confirm-dwelling-inventory': '项目编号、整项目住房清单或总户数待确认',
+  'confirm-dwelling-classification': '逐户无障碍住房分类待确认',
+  'confirm-dwelling-rule-basis': '项目适用性与配建依据待确认',
+  'confirm-window-sill': '外窗类型、窗台净高或起算面待确认',
+  'confirm-window-guard': '低窗台防护措施待确认',
   'missing-outline': '缺少房间轮廓证据',
   'input-conflict': '证据重复或存在取数冲突',
   'execution-input': '执行所需的其他前提未满足',
@@ -74,6 +81,8 @@ export function diagnosePalResults<T extends Finding>(items: CheckItem[], rows: 
 
   function diagnose(row: T, item: CheckItem): PalDiagnosis {
     const object = row.object;
+    if ((item.componentMinimumRule || item.dwellingMinimumRule || item.conditionalRequirementRule) && row.blocker)
+      return { blockers: [row.blocker] };
     if (!object) return { blockers: ['missing-object'] };
     const candidate = candidateFor(object);
     if (item.rule?.concept === HEIGHT) return { blockers: ['confirm-level'], candidate };

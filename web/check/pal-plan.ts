@@ -1,4 +1,8 @@
 import { DOOR_WIDTH, doorUses, type DoorThresholds, type DoorUse } from './door-width.js';
+import type { ComponentMinimumRule, StairHeadroomBranch } from './component-minimum.js';
+import { sameDwellingMinimum, validDwellingMinimum } from './core/dwelling-count.js';
+import type { DwellingMinimumRule } from './dwelling-minimum-rule.js';
+import type { ConditionalRequirementRule } from './conditional-requirement.js';
 
 export const HEIGHT = 'storey.architectural-height';
 export const ROOM_NET_AREA = 'space.model-recorded-net-area';
@@ -22,6 +26,9 @@ export type PalPlan =
   | ToolPlan
   | DoorWidthPlan
   | { kind: 'space-projection-exclusion' }
+  | Pick<ComponentMinimumRule, 'kind' | 'profile' | 'thresholds'> & { quotes: Record<StairHeadroomBranch, string> }
+  | Pick<DwellingMinimumRule, 'kind' | 'profile' | 'minimumCount' | 'minimumFraction'> & { quotes: [string, string] }
+  | Pick<ConditionalRequirementRule, 'kind' | 'profile' | 'sillThreshold'> & { quote: string }
   | { kind: 'blocked'; reason: string; gap?: 'missing-tool' | 'clarification' | 'external-evidence' };
 export interface PalResult { id: string; plan: PalPlan }
 
@@ -38,6 +45,9 @@ export const PAL_PROMPT = [
   'read 读取该 profile 的 measured；difference 只用于明确有 upper 与 lower 的 profile，且 inputs 须依次为 upper、lower。适用对象由审核人逐对象确认，不能丢弃分档、其他条件或例外。限值必须是原文引用，工具本身不含限值。',
   '门扇开启后的有效通行净宽若按户门、居室门、厨房门和卫生间门明确给出四档下限，返回 {"id":"...","kind":"door-clear-width-by-use","thresholds":{"entrance":"原文数字及单位","habitable":"原文数字及单位","kitchen":"原文数字及单位","bathroom":"原文数字及单位"}}。不能补猜档位或忽略其他限制。',
   '若明确禁止上层卫生间与下层卧室、起居室、厨房及餐厅投影有正面积相交，可返回 {"id":"...","kind":"space-projection-exclusion"}。适用对象与下层清单须确认。',
+  '对于楼梯梯段和平台各有一个明确的净高下限，且无其他限值或例外的条款，返回 {"id":"...","kind":"component-minimum","profile":"stair-headroom","thresholds":{"flight":"梯段原文数字及单位","landing":"平台原文数字及单位"}}。允许原文要求核对梁、风管或管线，量测范围由复核证据确认。',
+  '若明确要求新建住宅项目的无障碍住房同时达到全项目总户数的一定比例和一个最少套数，可返回 {"id":"...","kind":"dwelling-count-minimum","profile":"accessible-dwellings","minimumCount":"原文整数","minimumFraction":"原文比例"}。逐户清单和适用配建依据由项目复核。分期、分幢或其他例外不能省略。',
+  '若明确要求外窗窗台净高严格低于限值时必须设防护，可返回 {"id":"...","kind":"conditional-requirement","profile":"window-sill-protection","sillThreshold":"原文数字及单位"}。飘窗的起算面按已确认可踏面绑定。其他例外、不同触发方向或防护尺寸条款不得合并省略。',
   '不能用已有原语表达时返回 blocked，可加 gap: missing-tool、clarification 或 external-evidence。楼高不是室内净高，门洞宽度不是通行净宽，楼板名义 thickness 不是已确认结构层厚。',
 ].join('\n');
 
@@ -79,8 +89,122 @@ function readFraction(value: string) {
 
 const blocked = (reason: string): PalPlan => ({ kind: 'blocked', reason });
 
-function strictlyKeys(candidate: Record<string, unknown>, keys: string[]) {
+function strictlyKeys(candidate: Record<string, unknown>, keys: readonly string[]) {
   return Object.keys(candidate).length === keys.length && keys.every(key => Object.hasOwn(candidate, key));
+}
+
+function windowSillProtectionPlan(candidate: Record<string, unknown>, clause: PalClause): PalPlan {
+  const unclear = (reason: string): PalPlan => ({ kind: 'blocked', gap: 'clarification', reason });
+  const { sillThreshold: quote } = candidate;
+  if (!strictlyKeys(candidate, ['id', 'kind', 'profile', 'sillThreshold']) ||
+      candidate.profile !== 'window-sill-protection' || typeof quote !== 'string')
+    return unclear('外窗防护规则须给出触发防护要求的原文窗台净高。');
+  const [target, attribute, applies, note] = [clause.target, clause.attribute, clause.applicability, clause.note].map(normalized);
+  if ((target && !/^(?:住宅)?外窗$/.test(target)) ||
+      (attribute && !/^窗台净高(?:\+防护措施属性)?$/.test(attribute)) ||
+      (applies && !/^(?:住宅)?外窗(?:[、,]落地窗[、,]飘窗)?[。.]?$/.test(applies)) ||
+      (note && !/^飘窗以可踏面起算高度[。.]?$/.test(note)))
+    return unclear('外窗适用范围、起算面或防护例外待澄清。');
+  const fields = [clause.condition, clause.limit].map(text => normalized(text).replace(/[。.]$/, '')).filter(Boolean);
+  const sillThreshold = readQuantity(normalized(quote), 'm');
+  const prefix = '^(?:住宅)?(外窗)?窗台(净高)?(?:低于|小于)';
+  const amount = '(\\d+(?:\\.\\d+)?(?:毫米|mm|米|m))';
+  const failure = new RegExp(`${prefix}${amount}且(?:无防护(?:措施)?|未设置?防护(?:措施)?)判fail$`);
+  const requirement = new RegExp(`${prefix}${amount}(?:的部位|时|[，,])?(?:应|须|必须)(?:设置?|有)防护(?:措施)?$`);
+  let foundQuote = false;
+  let exteriorScope = !!(target || applies);
+  for (const field of fields) {
+    const match = failure.exec(field) ?? requirement.exec(field);
+    if (!match || (!match[2] && !attribute) || sillThreshold === undefined || readQuantity(match[3], 'm') !== sillThreshold)
+      return unclear('窗台净高、严格低于条件或须设防护的要求与原文不符。');
+    foundQuote ||= match[3] === normalized(quote);
+    exteriorScope ||= !!match[1];
+  }
+  return foundQuote && exteriorScope && sillThreshold !== undefined
+    ? { kind: 'conditional-requirement', profile: 'window-sill-protection', sillThreshold, quote }
+    : unclear('需从原文绑定外窗范围、窗台净高和防护触发条件。');
+}
+
+function dwellingMinimumPlan(candidate: Record<string, unknown>, clause: PalClause): PalPlan {
+  const unclear = (reason: string): PalPlan => ({ kind: 'blocked', gap: 'clarification', reason });
+  const { minimumCount: countQuote, minimumFraction: fractionQuote } = candidate;
+  if (!strictlyKeys(candidate, ['id', 'kind', 'profile', 'minimumCount', 'minimumFraction']) ||
+      candidate.profile !== 'accessible-dwellings' || typeof countQuote !== 'string' || typeof fractionQuote !== 'string' ||
+      !/^\d+$/.test(normalized(countQuote)))
+    return unclear('无障碍住房计数规则须给出原文的最低套数和比例。');
+  const [target, attribute, applies, note] = [clause.target, clause.attribute, clause.applicability, clause.note].map(normalized);
+  if ((target && !/^无障碍住房$/.test(target)) || (attribute && !/^户类型属性(?:accessibleunit)?$/.test(attribute)) ||
+      (applies && !/^新建住宅(?:小区|项目)$/.test(applies)) ||
+      (note && !/^户数与套型属性须逐户建模,不得整单元复制遗漏[。.]?$/.test(note)))
+    return unclear('无障碍住房的项目范围、分期或例外待澄清。');
+  const pct = '(\\d+(?:\\.\\d+)?%|\\d+/\\d+)';
+  const failure = new RegExp(`^无障碍住房(?:数|套数)低于max\\((\\d+),总户数[x×*]${pct}\\)判fail$`);
+  const required = new RegExp(`^(新建住宅(?:小区|项目)的)?(无障碍住房(?:数|套数)?)?(?:应)?(?:不低于|不少于|不得少于)总户数(?:的)?${pct}[,;]?且每个项目(?:不少于|至少)(\\d+)套$`);
+  const fields = [clause.condition, clause.limit].map(value => normalized(value).replace(/[。.]$/, '')).filter(Boolean);
+  const thresholds = { minimumCount: Number(normalized(countQuote)), minimumFraction: readFraction(normalized(fractionQuote)) };
+  if (!validDwellingMinimum(thresholds)) return unclear('原文的最低套数或比例格式不受支持。');
+  let quotedCount = false;
+  let quotedFraction = false;
+  let scopeKnown = !!applies;
+  for (const field of fields) {
+    const lower = failure.exec(field);
+    const both = required.exec(field);
+    if (!lower && (!both || (!target && !both[2])))
+      return unclear('原文须同时给出整项目最低套数、总户数比例和判定方向。');
+    scopeKnown ||= !!both?.[1];
+    const count = lower?.[1] ?? both![4];
+    const percent = lower?.[2] ?? both![3];
+    const original = { minimumCount: Number(count), minimumFraction: readFraction(percent) };
+    if (!validDwellingMinimum(original) || !sameDwellingMinimum(original, thresholds))
+      return unclear('无障碍住房的最低套数或比例与原文冲突。');
+    quotedCount ||= count === normalized(countQuote);
+    quotedFraction ||= percent === normalized(fractionQuote);
+  }
+  return scopeKnown && quotedCount && quotedFraction
+    ? { kind: 'dwelling-count-minimum', profile: 'accessible-dwellings', ...thresholds, quotes: [countQuote, fractionQuote] }
+    : unclear('需从原文确认新建住宅项目范围及最低套数和比例。');
+}
+
+function stairHeadroomPlan(candidate: Record<string, unknown>, clause: PalClause): PalPlan {
+  const unclear = (reason: string): PalPlan => ({ kind: 'blocked', gap: 'clarification', reason });
+  const proposal = candidate.thresholds as Record<string, unknown> | null;
+  if (!strictlyKeys(candidate, ['id', 'kind', 'profile', 'thresholds']) || candidate.profile !== 'stair-headroom' ||
+      !proposal || typeof proposal !== 'object' || !strictlyKeys(proposal, ['flight', 'landing']))
+    return unclear('楼梯净空分档须同时给出梯段和平台的原文限值。');
+  const [target, attribute, applies, note] = [clause.target, clause.attribute, clause.applicability, clause.note].map(normalized);
+  if ((target && !/^楼梯(?:净空|净高|梯段与平台)?$/.test(target)) ||
+      (attribute && !/^(?:净高|净空|梯段与平台处净高|梯段与平台净高)$/.test(attribute)) ||
+      (applies && !/^(?:楼梯(?:梯段与平台)?|含梁、风管、管线穿越处)[。.]?$/.test(applies)) ||
+      (note && !/^模型须含结构与风管,否则漏判[。.]?$/.test(note)))
+    return unclear('楼梯净空的适用条件、障碍范围或例外待澄清。');
+  const fields = [clause.condition, clause.limit].map(normalized).filter(Boolean);
+  const numeric = /^((?:楼梯)?梯段|(?:楼梯)?平台)(?:处)?(净高|净空)?(低于|小于|不低于|不应低于|不得低于|不少于|不小于|不应小于|不得小于|至少|≥)(\d+(?:\.\d+)?(?:毫米|mm|米|m))(判fail)?$/;
+  const quotes: Partial<Record<StairHeadroomBranch, string>> = {};
+  for (const field of fields) {
+    const failureList = /判fail[。.]?$/.test(field);
+    const fragments = field.replace(/[。.]$/, '').replace(/判fail$/, '').split(failureList ? /或/ : /[;,。]/);
+    const seen = new Set<StairHeadroomBranch>();
+    for (const fragment of fragments) {
+      const match = numeric.exec(fragment);
+      if (!match || (!match[2] && !/净空|净高/.test(target + attribute)) ||
+          (['低于', '小于'].includes(match[3]) !== (failureList || !!match[5])))
+        return unclear('楼梯净空分支的比较方向、部位或附加条件待澄清。');
+      const branch = match[1].endsWith('梯段') ? 'flight' : 'landing';
+      if (seen.has(branch) || (quotes[branch] && readQuantity(quotes[branch], 'm') !== readQuantity(match[4], 'm')))
+        return unclear(`楼梯${branch === 'flight' ? '梯段' : '平台'}净高的限值重复或在原文中冲突。`);
+      seen.add(branch);
+      if (typeof proposal[branch] === 'string' && normalized(proposal[branch]) === match[4]) quotes[branch] = match[4];
+      else if (!quotes[branch]) quotes[branch] = match[4];
+    }
+    if (seen.size !== 2) return unclear('楼梯净空原文须同时给出梯段和平台的下限及对应部位。');
+  }
+  const flight = typeof proposal.flight === 'string' ? readQuantity(normalized(proposal.flight), 'm') : undefined;
+  const landing = typeof proposal.landing === 'string' ? readQuantity(normalized(proposal.landing), 'm') : undefined;
+  if (!flight || !landing || !quotes.flight || !quotes.landing ||
+      normalized(proposal.flight as string) !== quotes.flight || normalized(proposal.landing as string) !== quotes.landing)
+    return unclear('梯段或平台净高下限未绑定到对应分支的原文。');
+  return { kind: 'component-minimum', profile: 'stair-headroom', thresholds: { flight, landing },
+    quotes: { flight: proposal.flight as string, landing: proposal.landing as string } };
 }
 
 /** The explicit table format for a single residential storey lower limit is deterministic. */
@@ -158,8 +282,13 @@ function validateProposal(candidate: Record<string, unknown>, clause: PalClause,
         (gap === 'missing-tool' || gap === 'clarification' || gap === 'external-evidence'))
       return { kind: 'blocked', reason, gap };
   }
+  if (candidate.kind === 'conditional-requirement') return windowSillProtectionPlan(candidate, clause);
+  if (/窗台/.test(text.join(' ')) && /防护/.test(text.join(' ')))
+    return { kind: 'blocked', gap: 'clarification', reason: '须保留窗台净高触发条件和防护措施要求。' };
   if (candidate.kind === 'door-clear-width-by-use') return doorWidthPlan(candidate, clause) ??
     blocked('四类门的限值、比较方向或原文适用条件未能一致绑定。');
+  if (candidate.kind === 'component-minimum') return stairHeadroomPlan(candidate, clause);
+  if (candidate.kind === 'dwelling-count-minimum') return dwellingMinimumPlan(candidate, clause);
   if (candidate.kind === 'space-projection-exclusion') {
     const words = [clause.target, clause.condition, clause.limit].join(' ');
     const match = /^(?:本层|上层)?卫生间(?:的)?投影(落在|与)下层((?:卧室|起居室(?:\(厅\))?|厨房|餐厅)(?:[、,或和](?:卧室|起居室(?:\(厅\))?|厨房|餐厅)){3})(发生叠合|正面积相交|投影相交|重叠|叠合|相交)?判fail[。.]?$/

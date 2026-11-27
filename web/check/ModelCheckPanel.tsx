@@ -16,6 +16,9 @@ import { blockerLabels } from './pal-readiness.js';
 import { candidateLimit, readCandidatePackage } from './pal-candidate-package.js';
 import type { PalResult } from './pal-plan.js';
 import { compareModelCheckReports, readComparisonBaseline, type ComparisonBaseline } from './report-comparison.js';
+import { checkRule, type CheckRunFingerprint } from './check-run-fingerprint.js';
+import { stairHeadroomBranches } from './component-minimum.js';
+import { sillBases, windowKinds } from './window-sill-protection.js';
 import type { WorkspaceCommandRequest } from '../area/editor-commands.js';
 import './model-check.css';
 
@@ -30,6 +33,10 @@ const percent = new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFracti
 const EXCLUDED = ':excluded';
 const MANUAL = ':manual';
 const gapLabels = { 'missing-tool': '缺少核查工具', 'external-evidence': '缺少外部证据', clarification: '条款待澄清' };
+const inputLabels = { plan: '规则与工具', evidence: '读取的模型证据', review: '本地人工确认' } as const;
+const executionLabel = (entry?: CheckRunFingerprint) => entry
+  ? [entry.ruleVersion, entry.executor, entry.tool && `${entry.tool.id} · v${entry.tool.version}`].filter(Boolean).join(' · ')
+  : '无执行版本记录';
 
 async function fetchLibrary(signal?: AbortSignal): Promise<ToolEntry[]> {
   const response = await fetch(MODEL_PAL_LIBRARY_PATH, { signal });
@@ -91,6 +98,7 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
   const pendingClauses = input?.items.flatMap(item => item.clause && !item.plan ? [item.clause] : []) ?? [];
   const activeItems = input?.items.map(item => excludedRules.has(item.id)
     ? { ...item, rule: undefined, clearHeightRule: undefined, doorWidthRule: undefined, overlapRule: undefined,
+      componentMinimumRule: undefined, dwellingMinimumRule: undefined, conditionalRequirementRule: undefined,
       libraryTool: undefined, reason: '本次未审核放行。' } : item) ?? [];
   const hasHeight = activeItems.some(item => item.rule?.concept === HEIGHT);
   const hasRoomArea = activeItems.some(item => item.rule?.concept === ROOM_NET_AREA);
@@ -98,7 +106,10 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
   const hasClearHeight = clearHeightThresholds.length > 0;
   const hasLibraryRules = activeItems.some(item => item.libraryTool && (item.rule || item.doorWidthRule));
   const hasOverlap = activeItems.some(item => item.overlapRule);
-  const needsReview = hasHeight || hasRoomArea || hasClearHeight || hasLibraryRules || hasOverlap;
+  const hasComponentMinimum = activeItems.some(item => item.componentMinimumRule);
+  const hasDwellingMinimum = activeItems.some(item => item.dwellingMinimumRule);
+  const hasWindowProtection = activeItems.some(item => item.conditionalRequirementRule);
+  const needsReview = activeItems.some(checkRule);
 
   useEffect(() => {
     if (open && textDraft && textDetails.current) textDetails.current.open = true;
@@ -447,6 +458,7 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
 
   function editStorey(level: string, choice: StoreyChoice) {
     setStoreyEdits(previous => new Map(previous).set(level, choice));
+    setReviewed(false);
     invalidateReport();
   }
 
@@ -458,7 +470,7 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
     }
     if (state.viewMode !== '2d') dispatch({ type: 'SET_VIEW_MODE', mode: '2d' });
     const discipline = object.table === 'structure_slab' ? 'structure'
-      : object.table === 'space' || object.table === 'door' ? 'architecture' : undefined;
+      : object.table === 'space' || object.table === 'door' || object.table === 'window' ? 'architecture' : undefined;
     if (discipline && state.activeDiscipline !== 'all' && state.activeDiscipline !== discipline)
       dispatch({ type: 'SET_DISCIPLINE', discipline });
     if (state.currentLevel !== level) dispatch({ type: 'SET_LEVEL', levelId: level });
@@ -479,7 +491,7 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
         status: report.clauseTrace.find(entry => entry.id === item.id)?.status ?? 'not-run' })),
       ...(input.needsCompile && { pal: { models: input.models ?? [], plans: input.items.flatMap(item => item.plan
         ? [{ id: item.id, locator: item.source.locator,
-          reviewed: reviewed && !excludedRules.has(item.id) && !!(item.rule || item.clearHeightRule || item.doorWidthRule || item.overlapRule),
+          reviewed: reviewed && !excludedRules.has(item.id) && !!checkRule(item),
           plan: item.plan }]
         : []) } }),
     }, 'model-check-report.json');
@@ -488,23 +500,24 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
   function downloadReviewedRules() {
     if (!reviewed || compileProgress) return;
     const rules = activeItems.flatMap(item => {
-      const rule = item.rule ?? item.clearHeightRule ?? item.doorWidthRule ?? item.overlapRule;
+      const rule = checkRule(item);
       return rule ? [{ ...rule, reviewed: true, ...(item.libraryTool && { registeredToolId: item.libraryTool.id }) }] : [];
     });
     if (rules.length) saveJson({ rules }, 'reviewed-model-check-rules.json');
   }
 
-  const ready = input?.items.filter(item => item.rule || item.clearHeightRule || item.doorWidthRule || item.overlapRule) ?? [];
+  const ready = input?.items.filter(checkRule) ?? [];
   const activeReady = ready.filter(item => !excludedRules.has(item.id));
   const comparison = useMemo(() => report && baseline && report !== baseline
     ? compareModelCheckReports(baseline, report) : undefined, [report, baseline]);
-  const compiled = input?.items.filter(item => item.plan ? item.plan.kind !== 'blocked' :
-    item.rule || item.clearHeightRule || item.doorWidthRule || item.overlapRule).length ?? 0;
-  const affectedRules = baseline?.exportFeedback.map(item => item.ruleId)
-    .filter(id => activeReady.some(item => item.id === id)) ?? [];
+  const compiled = input?.items.filter(item => item.plan ? item.plan.kind !== 'blocked' : checkRule(item)).length ?? 0;
+  const affectedRules = [...new Set(baseline?.exportFeedback.map(item => item.ruleId))]
+    .filter(id => activeReady.some(item => item.id === id));
   const reportRules = report?.clauseTrace ?? [];
   const displayedResults = report?.results.filter(row => !ruleFilter || row.ruleId === ruleFilter) ?? [];
   const displayedPending = report?.pending.filter(row => !ruleFilter || row.id === ruleFilter) ?? [];
+  const projectResultCount = report?.results.filter(row => 'resultScope' in row && row.resultScope === 'project').length ?? 0;
+  const missingObjectCount = report?.results.filter(row => !row.object && !('resultScope' in row)).length ?? 0;
   const levels = levelData?.levels ?? [];
   const counts = Object.fromEntries(ordering.map(status => [status,
     displayedResults.filter(result => result.status === status).length]));
@@ -580,7 +593,8 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
       </div>}
       {ready.length > 0 && <details open>
         <summary>可执行条款与审核</summary>
-        <ul className="model-check-list">{ready.map(({ id, title, source, rule, clearHeightRule, doorWidthRule, overlapRule, plan, libraryTool, compiledLocally }) =>
+        <ul className="model-check-list">{ready.map(({ id, title, source, rule, clearHeightRule, doorWidthRule, overlapRule,
+          componentMinimumRule, dwellingMinimumRule, conditionalRequirementRule, plan, libraryTool, compiledLocally }) =>
           <li key={id}><strong>{id} · {title}</strong>
             {compiledLocally && <small>限值从原表本地解析 · 确认建筑标高及适用楼层后执行</small>}
             {rule && <small>{libraryTool ? TOOL_PROFILES[libraryTool.recipe.concept].title
@@ -591,6 +605,12 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
             {doorWidthRule && <small>{(Object.keys(doorUses) as DoorUse[])
               .map(use => `${doorUses[use]} ≥ ${doorWidthRule.thresholds[use]} m`).join(' · ')}</small>}
             {overlapRule && <small>上层卫生间与下层卧室、起居室、厨房、餐厅的投影相交面积须为 0 m²。</small>}
+            {componentMinimumRule && <small>梯段净高 ≥ {componentMinimumRule.thresholds.flight} m ·
+              平台净高 ≥ {componentMinimumRule.thresholds.landing} m</small>}
+            {dwellingMinimumRule && <small>无障碍住房不少于总户数的 {percent.format(
+              dwellingMinimumRule.minimumFraction.numerator / dwellingMinimumRule.minimumFraction.denominator)}
+              {' '}且每个项目至少 {dwellingMinimumRule.minimumCount} 套</small>}
+            {conditionalRequirementRule && <small>外窗窗台净高低于 {conditionalRequirementRule.sillThreshold} m 时须设防护</small>}
             {plan && ('quote' in plan || 'quotes' in plan) &&
               <small>原文限值：{'quote' in plan ? plan.quote : Object.values(plan.quotes).join('、')}</small>}
             <small>{source.locator} · {source.text}</small>
@@ -656,6 +676,7 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
       {hasClearHeight && <RoomClearHeightFields rooms={roomInventory?.rooms} thresholds={clearHeightThresholds}
         entries={clearHeightEntries} edit={(key, entry) => {
           setClearHeightEntries(previous => new Map(previous).set(key, entry));
+          setReviewed(false);
           invalidateReport();
         }} />}
       {needsReview && <label className="area-review"><input type="checkbox" checked={reviewed}
@@ -672,6 +693,9 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
           {hasRoomArea && '我确认各净面积条款适用于模型全部房间，且采用模型记载净面积口径。'}
           {hasLibraryRules && '工具库规则按证据文件中的逐对象适用性执行。'}
           {hasOverlap && '已核对跨层配对、室内用途和投影轮廓的适用性。'}
+          {hasComponentMinimum && '楼梯净空按逐构件的适用性、量测和障碍覆盖复核记录执行。'}
+          {hasDwellingMinimum && '住宅配建按经复核的整项目清单和配建依据执行。'}
+          {hasWindowProtection && '外窗按逐窗复核的窗型、窗台净高和低窗台防护证据执行。'}
           {input.needsCompile && !baseline && '确认后自动运行核查。'}</span></label>}
       <button type="button" className="area-primary" onClick={() => void run()}
         disabled={busy || importingCandidates || !!compileProgress || (needsReview && !reviewed) || !levelData || (hasClearHeight && !roomInventory)}>
@@ -687,7 +711,7 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
       }} /></label>
       {baseline && <fieldset className="model-check-levels">
         <legend>补证据与复跑</legend>
-        <small>已保存基线。模型快照 {baseline.modelVersion.slice(0, 12)}{baseline.evidenceInventory.revision &&
+        <small>已载入复跑基线。运行指纹 {baseline.modelVersion.slice(0, 12)}{baseline.evidenceInventory.revision &&
           ` · 工程版本 ${baseline.evidenceInventory.revision}`}。更新项目文件后刷新证据并复核条款。</small>
         <div>
           <button type="button" disabled={busy} onClick={() => setRevision(value => value + 1)}>刷新模型证据</button>{' '}
@@ -701,8 +725,9 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
     {report && <section className="model-check-results" aria-label="核查结果">
       <h3 ref={resultsHeading} tabIndex={-1}>核查结果</h3>
       <p>已评估 {new Set(report.results.map(row => row.ruleId)).size} 条条款，
-        产生 {report.results.filter(row => row.object).length} 个对象结果。
-        {report.results.some(row => !row.object) && `另有 ${report.results.filter(row => !row.object).length} 条缺少核查对象。`}
+        产生 {report.results.filter(row => row.object && row.object.table !== 'project').length} 个对象结果。
+        {projectResultCount > 0 && `另有 ${projectResultCount} 条项目级结果。`}
+        {missingObjectCount > 0 && `有 ${missingObjectCount} 条缺少核查对象。`}
         {report.pending.length > 0 && ` ${report.pending.length} 条待处理。`}</p>
       <details open>
         <summary>工程证据预检</summary>
@@ -728,16 +753,31 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
         <option value="">全部条款</option>
         {reportRules.map(rule => <option key={rule.id} value={rule.id}>{rule.id} · {rule.title}</option>)}
       </select></label>
-      {comparison && <details open>
-        <summary>复跑对比 · {comparison.changes.length} 项状态变化</summary>
-        <small>模型快照 {comparison.beforeModelVersion.slice(0, 12)} → {comparison.afterModelVersion.slice(0, 12)} ·
-          复跑条款 {comparison.rules.join('、')}</small>
-        <ul className="model-check-list">{comparison.changes.map(change => <li
-          key={JSON.stringify([change.ruleId, change.ruleVersion, change.object])}>
-          <small>{change.ruleId} · {change.object ? `${change.object.scope}/${change.object.table}/${change.object.id}` : '条款级'}
-            {' · '}{change.before ? labels[change.before] : '无原结果'} → {change.after ? labels[change.after] : '无本次结果'}</small>
-        </li>)}</ul>
-      </details>}
+      {comparison?.runs.length ? <details open>
+        <summary>复跑对比 · {comparison.runs.length} 条 · {comparison.changes.length} 项结果或阻断变化</summary>
+        <small>工程版本 {comparison.beforeEvidenceRevision || '未声明'} → {comparison.afterEvidenceRevision || '未声明'}</small>
+        <ul className="model-check-list">{comparison.runs.filter(run => !ruleFilter || run.ruleId === ruleFilter).map(run => {
+          const changedInputs = run.changes && (Object.keys(inputLabels) as (keyof typeof inputLabels)[])
+            .filter(input => run.changes?.[input]).map(input => inputLabels[input]);
+          return <li key={run.ruleId}>
+            <strong>{run.ruleId}</strong>
+            <small>{run.newExecution ? '本次新增执行' : !changedInputs ? '基线缺少执行指纹，输入变化待核'
+              : changedInputs.length ? `有变化 · ${changedInputs.join('、')}` : '规则、读取的模型证据和本地人工确认均一致'}</small>
+            <small>基线 {executionLabel(run.before)}</small>
+            <small>本次 {executionLabel(run.after)}</small>
+          </li>;
+        })}</ul>
+        <ul className="model-check-list">{comparison.changes.filter(change => !ruleFilter || change.ruleId === ruleFilter)
+          .map(({ ruleId, object, before, after, beforeBlockers, afterBlockers }) => <li key={JSON.stringify([ruleId, object])}>
+            <strong>{ruleId} · {object ? `${object.scope}/${object.table}/${object.id}` : '条款级'}</strong>
+            <small>{before ? labels[before] : '无原结果'} → {after ? labels[after] : '无本次结果'}</small>
+            {(beforeBlockers.length > 0 || afterBlockers.length > 0) && <small>
+              阻断原因 {beforeBlockers.map(kind => blockerLabels[kind]).join('、') || '无记录'} →
+              {' '}{afterBlockers.map(kind => blockerLabels[kind]).join('、') || '无记录'}
+            </small>}
+            {object && object.table !== 'project' && after && <button type="button" onClick={() => locate(object)}>定位本次对象</button>}
+          </li>)}</ul>
+      </details> : null}
       {notice && <p role="status">{notice}</p>}
       <ul className="model-check-list">
         {ordering.filter(status => filter === 'all' || filter === status).flatMap(status =>
@@ -745,6 +785,8 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
             const evidence = 'evidence' in row ? row.evidence : undefined;
             const clearHeightEvidence = 'clearHeightEvidence' in row ? row.clearHeightEvidence : undefined;
             const doorUse = 'doorUse' in row ? row.doorUse as DoorUseEvidence | undefined : undefined;
+            const dwellingCount = 'dwellingCount' in row ? row.dwellingCount : undefined;
+            const windowProtection = 'windowProtection' in row ? row.windowProtection : undefined;
             const evidenceFiles = row.object && status === 'indeterminate'
               ? report.exportFeedback.find(item => item.ruleId === row.ruleId)?.files.map(path => path.replace('<楼层>', row.object!.scope))
               : undefined;
@@ -756,6 +798,22 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
               {clearHeightEvidence && <small>最低净高 {measurement.format(clearHeightEvidence.minimumHeight)} m ·
                 低于 {clearHeightEvidence.belowHeight} m 的面积 {measurement.format(clearHeightEvidence.lowArea)} m² /
                 {' '}{measurement.format(clearHeightEvidence.usableArea)} m²（{percent.format(clearHeightEvidence.ratio)}）</small>}
+              {dwellingCount && <>
+                <small>整项目 {dwellingCount.total} 户 · 应配 {dwellingCount.required} 套 ·
+                  已确认无障碍住房 {dwellingCount.accessible} 套
+                  {dwellingCount.shortfall > 0 && ` · 缺 ${dwellingCount.shortfall} 套`}</small>
+                <small>配建依据 {dwellingCount.basisSource} · 总户数来源 {dwellingCount.countSource}</small>
+              </>}
+              {windowProtection?.sill && <small>
+                {windowKinds[windowProtection.sill.kind]} · 净高 {measurement.format(windowProtection.sill.valueM)} m
+                {' · '}{sillBases[windowProtection.sill.basis]} · {windowProtection.sill.location} · {windowProtection.sill.source}
+              </small>}
+              {windowProtection?.sill && <small>防护触发限值 {windowProtection.threshold} m ·
+                {windowProtection.triggered ? windowProtection.guard
+                  ? windowProtection.guard.provided ? ' 已确认设有防护' : ' 已确认未设防护'
+                  : ' 防护状态待复核' : ' 未触发防护要求'}
+                {windowProtection.guard && ` · ${windowProtection.guard.source}`}
+              </small>}
               {'reason' in row && row.reason && <small>{row.reason}</small>}
               {row.diagnosis && <small>{row.diagnosis.blockers.map(kind => blockerLabels[kind]).join('、')}</small>}
               {!!evidenceFiles?.length && <small>补证据文件 {evidenceFiles.join('、')}</small>}
@@ -766,6 +824,10 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
               {'libraryToolId' in row && typeof row.libraryToolId === 'string' && <small>工具 {row.libraryToolId}</small>}
               {doorUse && <small>{doorUses[doorUse.use]} · 开启角 {doorUse.openingAngleDeg}° ·
                 {doorUse.measurementLine} · {doorUse.source}</small>}
+              {'componentMinimum' in row && <small>{stairHeadroomBranches[row.componentMinimum.branch].label} ·
+                净高下限 {row.componentMinimum.threshold} m</small>}
+              {'headroomCoverage' in row && row.headroomCoverage &&
+                <small>测点 {row.headroomCoverage.location} · 障碍覆盖 {row.headroomCoverage.source}</small>}
               {'overlap' in row && row.overlap?.violations.map(({ lowerObject, evidence }) => <span
                 key={JSON.stringify(lowerObject)}>与 {lowerObject.scope}/{lowerObject.id} 相交 {measurement.format(evidence.area)} m²
                 {' '}<button type="button" onClick={() => locate(lowerObject)}>定位下层房间</button></span>)}
@@ -773,7 +835,7 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
                 : 'diagnostic' in row && row.diagnostic.status === 'clarification-required'
                   ? '该对象的适用性待确认。' : '缺少符合规则口径的测量证据。'}</small>}
               <small>{row.source.locator}{evidence && ` · ${evidence.dataSource}`}{clearHeightEvidence && ` · ${clearHeightEvidence.source}`}</small>
-              {row.object && <button type="button" onClick={() => locate(row.object!)}>
+              {row.object && row.object.table !== 'project' && <button type="button" onClick={() => locate(row.object!)}>
                 {row.object.table === 'level' ? '定位楼层' : row.object.table === 'space' ? '定位房间' : '定位构件'}
               </button>}
             </li>;
@@ -801,7 +863,8 @@ export function ModelCheckPanel({ open, close, connection, libraryRevision, text
       </details>}
       {filter !== 'all' && filter !== 'pending' && counts[filter] === 0 && <p>没有此状态的对象结果。</p>}
       <button type="button" onClick={download}>下载核查报告</button>
-      {report.exportFeedback.length > 0 && <button type="button" onClick={() => setBaseline(report)}>保存为复跑基线</button>}
+      {report.results.length > 0 && report !== baseline &&
+        <button type="button" onClick={() => setBaseline(report)}>保存为复跑基线</button>}
     </section>}
   </aside>;
 }

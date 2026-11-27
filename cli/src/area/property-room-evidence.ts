@@ -32,6 +32,10 @@ export function readPropertyPolygon(input: unknown, scale: number) {
   return { polygon, outline };
 }
 
+export function roomOutlinesOverlap(left: JstsGeometry, right: JstsGeometry) {
+  return left.intersects(right) && left.intersection(right).getArea() > 1e-6;
+}
+
 function hasSeedCoordinate(value: string | undefined): value is string {
   return typeof value === 'string' && !!value.trim() && Number.isFinite(Number(value));
 }
@@ -111,7 +115,7 @@ export function inspectRoomEvidence(level: string, layer: RoomSource, scale: num
   for (const [id, { polygon }] of candidates) {
     for (const other of previous) {
       try {
-        if (!polygon.intersects(other.polygon) || polygon.intersection(other.polygon).getArea() <= 1e-6) continue;
+        if (!roomOutlinesOverlap(polygon, other.polygon)) continue;
         unresolved.set(id, 'overlapping-room-outlines');
         unresolved.set(other.id, 'overlapping-room-outlines');
       } catch {

@@ -7,6 +7,7 @@ import { offlineCompilationInput, offlineModel, offlineRules } from './pal-offli
 import { validatePalResponse } from './pal-plan.js';
 import { suggestStoreyChoices } from './storey-height.js';
 import { compareModelCheckReports, readComparisonBaseline } from './report-comparison.js';
+import { TOOL_PROFILES, toolId, type ToolRecipe } from './core/tool-recipes.js';
 
 const reader = (files: Map<string, string>) => ({ fetchText: async (path: string) => files.get(path) ?? null });
 const evidencePath = 'engineering_evidence.json';
@@ -38,11 +39,82 @@ describe('offline BIMDown PAL benchmark', () => {
     expect(() => readComparisonBaseline(downloaded, items.slice(1))).toThrow(/不符/);
     expect(comparison.rules).toEqual(['JG-03']);
     expect(comparison.beforeModelVersion).not.toBe(comparison.afterModelVersion);
+    expect(comparison.runs[0]).toMatchObject({ newExecution: false,
+      changes: { plan: false, evidence: true, review: false },
+      before: { tool: { version: 1 } }, after: { tool: { version: 1 } } });
     expect(comparison.changes).toHaveLength(3);
     expect(comparison.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({ object: { scope: 'lv-1', table: 'structure_slab', id: 's-1' }, before: 'indeterminate', after: 'pass' }),
       expect.objectContaining({ object: { scope: 'lv-2', table: 'structure_slab', id: 's-1' }, before: 'indeterminate', after: 'fail' }),
     ]));
+  });
+
+  it('keeps per-clause fingerprints stable across a selective rerun and detects a version change on the same objects', async () => {
+    const items = offlineRules();
+    const files = offlineModel('complete');
+    const storey = items.find(item => item.id === 'JT-01')!;
+    const baseline = await replay(files, true, items);
+    const partial = await replay(files, true, [storey]);
+    const unchanged = compareModelCheckReports(baseline, partial);
+    expect(unchanged.beforeModelVersion).not.toBe(unchanged.afterModelVersion);
+    expect(unchanged.runs[0].changes).toEqual({ plan: false, evidence: false, review: false });
+    expect(unchanged.changes).toEqual([]);
+
+    const changed = await replay(files, true, [{ ...storey, rule: { ...storey.rule!, version: 'review-2', threshold: 3.1 } }]);
+    const comparison = compareModelCheckReports(baseline, changed);
+    expect(comparison.runs[0]).toMatchObject({ before: { ruleVersion: storey.rule!.version }, after: { ruleVersion: 'review-2' },
+      changes: { plan: true, evidence: false, review: false } });
+    expect(comparison.changes).toEqual([
+      expect.objectContaining({ object: { scope: 'global', table: 'level', id: 'lv-1' }, before: 'pass', after: 'fail' }),
+    ]);
+
+    const legacy = { ...baseline, clauseTrace: baseline.clauseTrace.map(({ id, source }) => ({ id, source })) };
+    expect(compareModelCheckReports(readComparisonBaseline(legacy, items), partial).runs[0].changes).toBeNull();
+    expect(() => readComparisonBaseline({ ...baseline, results: [...baseline.results, baseline.results[0]] }, items)).toThrow(/重复/);
+  });
+
+  it('distinguishes local review from file changes and reports changed blockers without a status change', async () => {
+    const files = offlineModel('complete');
+    const storey = offlineRules().filter(item => item.id === 'JT-01');
+    const baseline = await replay(files, false, storey);
+    const reviewed = await replay(files, true, storey);
+    expect(compareModelCheckReports(baseline, reviewed).runs[0].changes)
+      .toEqual({ plan: false, evidence: false, review: true });
+
+    const slab = offlineRules().filter(item => item.id === 'JG-03');
+    const missing = await replay(offlineModel('baseline'), false, slab);
+    const stale = await replay(offlineModel('stale'), false, slab);
+    const comparison = compareModelCheckReports(missing, stale);
+    expect(comparison.runs[0].changes).toEqual({ plan: false, evidence: true, review: false });
+    expect(comparison.changes).toContainEqual(expect.objectContaining({
+      before: 'indeterminate', after: 'indeterminate', afterBlockers: expect.arrayContaining(['invalid-evidence']),
+    }));
+    const firstExecution = compareModelCheckReports({ ...missing, results: [] }, stale);
+    expect(firstExecution.runs[0].newExecution).toBe(true);
+  });
+
+  it('records a tool change even if all results stay stable', async () => {
+    const files = offlineModel('complete');
+    const item = offlineRules().find(rule => rule.id === 'JG-03')!;
+    const tool = item.libraryTool!;
+    const concept = 'slab.cast-in-place-solid-structural-thickness';
+    const fields = TOOL_PROFILES[concept].inputs;
+    const recipe: ToolRecipe = { concept, operation: 'difference', inputs: [fields.upper, fields.lower] };
+    const evidence = JSON.parse(files.get(evidencePath)!) as {
+      measurements: { object: { scope: string }; concept: string; value: number }[];
+    };
+    const elevations = evidence.measurements.filter(row => row.concept === concept).flatMap(row => [
+      { ...row, concept: fields.upper, measurementGroup: row.object.scope },
+      { ...row, concept: fields.lower, value: 0, measurementGroup: row.object.scope },
+    ]);
+    evidence.measurements.push(...elevations);
+    files.set(evidencePath, JSON.stringify(evidence));
+    const baseline = await replay(files, false, [item]);
+    const updated = await replay(files, false, [{ ...item, libraryTool: { ...tool, id: toolId(recipe), recipe } }]);
+    const comparison = compareModelCheckReports(baseline, updated);
+    expect(comparison.changes).toEqual([]);
+    expect(comparison.runs[0]).toMatchObject({ before: { tool: { id: tool.id } }, after: { tool: { id: toolId(recipe) } },
+      changes: { plan: true, evidence: false, review: false } });
   });
   it('reports export observations and missing prerequisites without binding them as measurements', async () => {
     const files = offlineModel('baseline');

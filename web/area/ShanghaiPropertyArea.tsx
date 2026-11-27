@@ -4,6 +4,7 @@ import { executeShanghaiPropertyArea, inspectShanghaiPropertyArea, PROPERTY_AREA
 import { inspectPropertyModelEvidence, type PropertyModelEvidence } from './core/property-model-evidence.js';
 import type { WorkspaceCommandRequest } from './editor-commands.js';
 import { PropertyBoundaryReview } from './PropertyBoundaryReview.tsx';
+import { PropertyBuildingLedger } from './PropertyBuildingLedger.tsx';
 
 type Result = Awaited<ReturnType<typeof executeShanghaiPropertyArea>>;
 type Readiness = Awaited<ReturnType<typeof inspectShanghaiPropertyArea>>;
@@ -70,6 +71,7 @@ function ModelEvidenceView({ evidence, locate, currentLevel, active, configText 
   evidence: PropertyModelEvidence; locate: Locate; currentLevel: string; active: boolean; configText: string;
 }) {
   const [levelId, selectLevel] = useState(currentLevel);
+  const [reviewRevision, setReviewRevision] = useState(0);
   const level = evidence.levels.find(item => item.id === levelId) ?? evidence.levels[0];
   const issues = [...evidence.diagnostics, ...level.diagnostics];
   const floorsWithRooms = evidence.levels.filter(item => item.rooms.rowCount > 0).length;
@@ -93,7 +95,9 @@ function ModelEvidenceView({ evidence, locate, currentLevel, active, configText 
       <dt>房间轮廓候选</dt><dd>已保存 {level.rooms.outlineIds.length} · 由定位点推导 {level.rooms.derivedOutlineIds.length} · 待核 {level.rooms.needsReviewCount}</dd>
     </dl>
     <PropertyBoundaryReview key={level.id} evidence={evidence} level={level} configText={configText}
-      active={active} locate={locate} download={download} />
+      active={active} locate={locate} download={download} onSaved={() => setReviewRevision(value => value + 1)} />
+    <PropertyBuildingLedger evidence={evidence} configText={configText} revision={reviewRevision} download={download}
+      locate={(id, room) => { selectLevel(id); locate(id, room); }} />
     {!level.rooms.rowCount && <p>可从 Revit 补导房间及轮廓，或在网页自动创建房间。</p>}
     {!!level.rooms.items.length && <details><summary>逐间查看面积与边界（{level.rooms.rowCount}）</summary>
       <ul className="area-room-preview">

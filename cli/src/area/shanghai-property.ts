@@ -1,4 +1,4 @@
-import { decimalParts } from '../engineering/decimal.js';
+import { cents, decimalSum, halfUp, squareMetres } from '../engineering/decimal.js';
 import { geoJsonToJsts, type JstsGeometry } from '../geo/geojson-to-jsts.js';
 import { polygonArea } from './index.js';
 import { projectGeometryPath } from './project-input.js';
@@ -38,24 +38,6 @@ class EvidenceError extends Error {
 function requireEvidence(condition: unknown, kind: DiagnosticKind, field: string, message: string): asserts condition {
   if (!condition) throw new EvidenceError(kind, field, message);
 }
-
-// Sum finite decimal inputs before applying any report rounding.
-function decimalSum(values: number[]) {
-  const parts = values.map(decimalParts);
-  const exponent = Math.min(0, ...parts.map(part => part.exponent));
-  const coefficient = parts.reduce((sum, part) => sum + part.coefficient * 10n ** BigInt(part.exponent - exponent), 0n);
-  return { coefficient, exponent, raw: Number(`${coefficient}e${exponent}`) };
-}
-function halfUp(numerator: bigint, denominator: bigint): bigint {
-  if (numerator < 0n) return -halfUp(-numerator, denominator);
-  return (numerator * 2n + denominator) / (denominator * 2n);
-}
-function cents(values: number[]) {
-  const { coefficient, exponent } = decimalSum(values);
-  return exponent >= -2 ? coefficient * 10n ** BigInt(exponent + 2)
-    : halfUp(coefficient, 10n ** BigInt(-2 - exponent));
-}
-const squareMetres = (value: bigint) => Number(value) / 100;
 
 function adoptedDate(date: unknown) {
   if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;

@@ -1,4 +1,4 @@
-import { readPropertyPolygon } from './core/property-room-evidence.js';
+import { readPropertyPolygon, roomOutlinesOverlap } from './core/property-room-evidence.js';
 import type { PropertyModelEvidence } from './core/property-model-evidence.js';
 import type { ProjectAreaConfig } from './core/project-input.js';
 import { geoJsonToJsts } from '../check/geo/geojson-to-jsts.js';
@@ -105,7 +105,7 @@ export function createBoundaryRecord(scope: BoundaryScope, file: BoundaryReviewF
       const outline = records.get(peer.id)?.reviewed?.outline ?? peer.outline;
       if (!outline) continue;
       const other = readPropertyPolygon(outline, 1).polygon;
-      if (geometry.polygon.intersects(other) && geometry.polygon.intersection(other).getArea() > 1e-6)
+      if (roomOutlinesOverlap(geometry.polygon, other))
         throw new Error(`复核轮廓与 ${peer.name}（${peer.id}）重叠，请核对边界。`);
     }
     reviewed = { outline: geometry.outline, areaM2: geometry.polygon.getArea() };

@@ -62,3 +62,13 @@ boundary_review:
   decisions: "keep, adjust, defer. Defer has no reviewed polygon or area."
   geometry: "Original outline, source path and derived boundary files, plus the reviewed outline and computed area when available."
   propertyUse: "Optional candidate use review on a saved valid outline. Stores kind (private, allocatable, non-allocatable or independent-use), building, scope (whole-building, selected-units or none), recipients or private owner, the known building unit roster, and the review source."
+building_ledger_report:
+  file: property-building-ledger.json
+  format: bimdown.property-building-ledger
+  version: 1
+  unit: m2
+  scope: "One building, explicitly selected natural floors with candidate snapshot hashes, and confirmation of room inventory coverage."
+  gross: "Positive separately measured building gross area and its review source, or null when missing."
+  rows: "Accepted candidate room reviews keyed by floor and room identifier, including the reviewed polygon, area, use, recipients and provenance."
+  result: "Pending, conflict or balanced, with review issues, unit subtotals and category totals. Comparison is performed after independent accumulation and rounding to 0.01 m²."
+  use: "Web candidate reconciliation report. The approved allocation input remains property_area.json."

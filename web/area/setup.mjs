@@ -28,7 +28,8 @@ for (const file of ['AreaWorkspace.tsx', 'AutomaticRooms.tsx', 'UnitRoomList.tsx
   'ModelQuestionPanel.tsx', 'ModelQuestionSettings.tsx', 'model-qa-evidence.ts', 'model-qa-evidence.test.ts',
   'model-qa-types.ts', 'model-qa.css', 'AreaPalPlan.tsx', 'pal-client.ts', 'pal-intent.ts', 'editor-commands.ts',
   'DevelopmentFeedback.tsx', 'development-request.mts', 'ShanghaiPropertyArea.tsx', 'PropertyBoundaryReview.tsx',
-  'property-boundary-review.ts', 'property-boundary-review.test.ts', 'property-room-use.ts', 'PropertyRoomUseReview.tsx'])
+  'property-boundary-review.ts', 'property-boundary-review.test.ts', 'property-room-use.ts', 'PropertyRoomUseReview.tsx',
+  'property-building-ledger.ts', 'property-building-ledger.test.ts', 'PropertyBuildingLedger.tsx'])
   copyChanged(join(root, 'web', 'area', file), join(area, file));
 for (const file of ['autoRooms.ts', 'autoRooms.test.ts', 'planDoorAssignment.ts', 'planDoorAssignment.test.ts',
   'unitRoomView.ts', 'unitRoomView.test.ts', 'measurementOutlines.ts', 'measurementOutlines.test.ts', 'modelQaGeometry.ts',
@@ -45,9 +46,11 @@ for (const file of ['index.ts', 'factor.ts', 'project-input.ts', 'door-assignmen
   copyChanged(join(root, 'cli', 'src', 'area', file), join(area, 'core', file));
 for (const file of ['ModelCheckPanel.tsx', 'ModelCheckLibrary.tsx', 'RoomClearHeightFields.tsx', 'check-import.ts', 'check-import.test.ts', 'check-model.ts', 'check-xlsx.ts',
   'pal-plan.ts', 'pal-readiness.ts', 'pal-candidate-package.ts', 'pal-offline.test.ts', 'pal-offline-fixture.ts', 'tool-evidence.ts', 'door-width.ts', 'space-overlap.ts', 'export-feedback.ts', 'report-comparison.ts',
-  'storey-height.ts', 'storey-height.test.ts', 'model-check.css'])
+  'storey-height.ts', 'storey-height.test.ts', 'check-run-fingerprint.ts', 'component-minimum.ts', 'stair-headroom.ts',
+  'stair-headroom.test.ts', 'dwelling-minimum.ts', 'dwelling-minimum-rule.ts', 'dwelling-minimum.test.ts',
+  'conditional-requirement.ts', 'window-sill-protection.ts', 'window-sill-protection.test.ts', 'model-check.css'])
   copyChanged(join(root, 'web', 'check', file), join(check, file));
-for (const file of ['index.ts', 'rule-set.ts', 'clear-height.ts', 'decimal.ts', 'tool-recipes.ts'])
+for (const file of ['index.ts', 'rule-set.ts', 'clear-height.ts', 'decimal.ts', 'dwelling-count.ts', 'tool-recipes.ts'])
   copyChanged(join(root, 'cli', 'src', 'engineering', file), join(check, 'core', file));
 for (const file of ['geojson-to-jsts.ts', 'jsts-exports.ts'])
   copyChanged(join(root, 'cli', 'src', 'geo', file), join(check, 'geo', file));

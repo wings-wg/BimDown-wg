@@ -24,7 +24,8 @@ fields:
       unit: "m or mm"
       source: "measurement or reviewed drawing reference"
       confirmed: "boolean"
-      measurementGroup: "same point and vertical datum for operands of a difference"
+      measurementGroup: "same point and vertical datum for operands of a difference, or same reviewed portion for paired window evidence"
+      windowSillBasis: "finished-floor or walkable-surface, required for concept window.sill-clear-height"
   - name: sourceRevision
     type: object
     required: false
@@ -76,6 +77,52 @@ fields:
       applicability: "exact applicability text of the reviewed rule"
       decision: "applies or does-not-apply"
       source: "reason and source for the explicit decision"
+      windowKind: "ordinary, full-height, or bay, required for applies on window-sill-protection"
+      dwellingCountBasis:
+        required: "for applies on a project-level dwelling-count-minimum rule"
+        source: "reviewed applicable regulation or approved project requirement, including local requirements where applicable"
+        minimumCount: "non-negative integer confirmed for this project"
+        minimumFraction: { numerator: "positive integer", denominator: "positive integer greater than or equal to the numerator" }
+        description: >
+          Use object scope global, table project, and id equal to project_metadata.project_number.
+          The confirmed figures must agree with the reviewed rule for a conclusive result.
+  - name: dwellingInventory
+    type: object
+    required: false
+    description: >
+      Reviewed inventory of individual dwellings for the entire residential project.
+      A model of one building or a provisional grouping is insufficient for a project-wide count.
+      The distinct number of records must equal the independently confirmed total.
+    fields:
+      projectId: "same identifier as project_metadata.project_number"
+      scope: "whole-residential-project"
+      complete: "boolean, true only after confirming that all dwellings in scope are listed"
+      expectedCount: "positive independently confirmed project dwelling count"
+      scopeSource: "approved project boundary or reviewed coverage reference"
+      countSource: "independent source of the total count"
+      dwellings:
+        description: "Up to 20,000 rows, unique by building and dwelling ID."
+        items:
+          building: "building identifier"
+          id: "dwelling identifier within its building"
+          accessible: "boolean, or null when eligibility is unresolved"
+          confirmed: "boolean"
+          source: "reviewed eligibility source, required for a confirmed classification"
+  - name: windowGuards
+    type: array
+    required: false
+    description: >
+      One reviewed protection record per scoped exterior window. The conditional rule binds
+      window.sill-clear-height, the minimum across the applicable opening, in metres or
+      millimetres from the finished interior floor
+      for ordinary and full-height windows, and from the confirmed walkable surface for bay
+      windows. Only windows strictly below the rule limit require this protection record.
+    items:
+      object: { scope: "level directory", table: "window", id: "window ID" }
+      provided: "boolean, true when protection is confirmed across the required portions, false when an applicable portion is confirmed unprotected"
+      location: "same reference as the sill measurementGroup"
+      source: "reviewed detail, analysis or inspection source"
+      confirmed: "boolean"
   - name: doorUses
     type: array
     required: false
@@ -87,6 +134,24 @@ fields:
       confirmed: "boolean"
       openingAngleDeg: "finite degrees, greater than 0 and at most 180"
       measurementLine: "reference to the actual clear-passage measurement line"
+  - name: stairHeadroomCoverage
+    type: array
+    required: false
+    description: >
+      Unique per physical stair flight or landing. The confirmed assessment covers the full
+      applicable walking area and identifies the point of minimum vertical headroom.
+      Bind to a reviewed measurement with the same scoped object and location as measurementGroup.
+      Use concept stair.flight-minimum-headroom for stair and stair_run, and
+      stair.landing-minimum-headroom for stair_landing. A stair row used only as a
+      container requires a reviewed does-not-apply record. Repeated instances require
+      separate physical component rows and confirmations.
+    items:
+      object: { scope: "level directory", table: "stair, stair_run or stair_landing", id: "component ID" }
+      location: "reviewed minimum headroom point or section reference"
+      coversStructure: "boolean, confirms coverage of the applicable structural restrictions"
+      coversServices: "boolean, confirms coverage of applicable ducts and other services"
+      source: "reviewed analysis or drawing identifying the scope and limiting obstructions"
+      confirmed: "boolean"
   - name: clearHeightAreas
     type: array
     required: false

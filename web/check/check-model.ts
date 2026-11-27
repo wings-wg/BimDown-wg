@@ -4,11 +4,15 @@ import { checkClearHeight } from './core/clear-height.js';
 import { HEIGHT, ROOM_NET_AREA, type CheckItem } from './check-import.js';
 import { isStoreyPair, manualHeightMetres, storeyHeightMetres, type ModelLevel, type StoreyChoice } from './storey-height.js';
 import { buildExportFeedback } from './export-feedback.js';
-import { objectId, parseEvidence, readToolEvidence, TOOL_EVIDENCE_PATH } from './tool-evidence.js';
+import { objectId, parseEvidence, readScopedObjectRows, readToolEvidence, TOOL_EVIDENCE_PATH } from './tool-evidence.js';
 import { DOOR_WIDTH } from './door-width.js';
 import { checkSpaceOverlap } from './space-overlap.js';
 import { TOOL_PROFILES, executeToolRecipe } from './core/tool-recipes.js';
 import { diagnosePalResults } from './pal-readiness.js';
+import { checkRule, fingerprint, runFingerprint } from './check-run-fingerprint.js';
+import { checkStairHeadroom, readStairHeadroomInventory } from './stair-headroom.js';
+import { checkDwellingMinimum, inspectDwellingInventory } from './dwelling-minimum.js';
+import { checkWindowSillProtection, readWindowGuards } from './window-sill-protection.js';
 
 type Reader = Pick<DataSource, 'fetchText'>;
 type Target = ScalarEvidenceSet['targets'][number];
@@ -83,6 +87,9 @@ export async function runModelCheck(
   const roomRules = rules.filter(rule => rule.concept === ROOM_NET_AREA);
   const clearHeightRules = items.flatMap(item => item.clearHeightRule ? [{ ...item.clearHeightRule, reviewed: true }] : []);
   const overlapRules = items.flatMap(item => item.overlapRule ? [{ ...item.overlapRule, reviewed: true }] : []);
+  const componentRules = items.flatMap(item => item.componentMinimumRule ? [{ ...item.componentMinimumRule, reviewed: true }] : []);
+  const dwellingRules = items.flatMap(item => item.dwellingMinimumRule ? [{ ...item.dwellingMinimumRule, reviewed: true }] : []);
+  const conditionalRules = items.flatMap(item => item.conditionalRequirementRule ? [{ ...item.conditionalRequirementRule, reviewed: true }] : []);
   const { levels, unit, scale, raw } = await readCheckLevels(ds);
   if ((heightRules.length || clearHeightRules.length) && raw.some((text, i) => text !== reviewedLevels[i]))
     throw new Error('模型标高或单位已变化，请重新确认层高。');
@@ -90,10 +97,13 @@ export async function runModelCheck(
   const inventory = roomRules.length || clearHeightRules.length || overlapRules.length ? await readCheckRooms(ds, levels) : undefined;
   const evidenceText = await ds.fetchText(TOOL_EVIDENCE_PATH);
   const toolEvidence = toolItems.length ? await readToolEvidence(ds, levels, toolItems, raw[0], evidenceText) : undefined;
+  const stairs = componentRules.length ? await readStairHeadroomInventory(ds, levels) : undefined;
+  const windows = conditionalRules.length ? await readScopedObjectRows(ds, levels, ['window']) : undefined;
   if (clearHeightRules.length && clearHeightInput && clearHeightInput.snapshot !== inventory?.snapshot)
     throw new Error('模型的房间清单或轮廓已变化，请重新核对净高证据。');
   if (heightRules.length * levels.length + (roomRules.length + clearHeightRules.length + overlapRules.length) *
-      (inventory?.rooms.length ?? 0) > 20000)
+      (inventory?.rooms.length ?? 0) + componentRules.length * (stairs?.objects.size ?? 0) +
+      conditionalRules.length * (windows?.objects.size ?? 0) > 20000)
     throw new Error('条款与对象的组合超过 20,000 项，请拆分规则文件。');
   const resolvedNames = new Map<string, string>();
   const key = (object: Target['object']) => JSON.stringify([object.scope, object.table, object.id]);
@@ -139,12 +149,14 @@ export async function runModelCheck(
     }
   }
 
-  const bytes = new TextEncoder().encode(JSON.stringify([raw, inventory?.snapshot, toolEvidence?.snapshot, evidenceText]));
+  const bytes = new TextEncoder().encode(JSON.stringify([raw, inventory?.snapshot, toolEvidence?.snapshot, evidenceText,
+    ...(stairs ? [stairs.snapshot] : []), ...(windows ? [{ windows: windows.sources }] : [])]));
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   const modelVersion = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
   const result = rules.length ? runScalarRuleSet({ rules }, { modelVersion, targets })
     : { version: 1, modelVersion, results: [] };
-  const projectRevision = raw[0] ? JSON.parse(raw[0]).engineering_revision : undefined;
+  const metadata = raw[0] ? JSON.parse(raw[0]) : undefined;
+  const projectRevision = metadata?.engineering_revision;
   let sidecar: ReturnType<typeof parseEvidence> | undefined;
   let sidecarError: string | undefined;
   if (evidenceText) {
@@ -225,23 +237,62 @@ export async function runModelCheck(
   }).flat() ?? [];
   const overlapResults = overlapRules.map(rule =>
     checkSpaceOverlap(rule, inventory!, evidenceText, projectRevision, modelVersion, unit)).flat();
+  const componentResults = stairs ? componentRules.flatMap(rule => checkStairHeadroom(rule, stairs, modelVersion, sidecar, sidecarError)) : [];
+  const projectId = typeof metadata?.project_number === 'string' ? metadata.project_number.trim() || undefined : undefined;
+  const dwellingInventory = dwellingRules.length ? inspectDwellingInventory(sidecar?.dwellingInventory, projectId) : undefined;
+  const dwellingResults = dwellingInventory ? dwellingRules.map(rule =>
+    checkDwellingMinimum(rule, projectId, dwellingInventory, modelVersion, sidecar, sidecarError)) : [];
+  const guards = windows && readWindowGuards(sidecar?.windowGuards);
+  const conditionalResults = windows && guards ? conditionalRules.flatMap(rule =>
+    checkWindowSillProtection(rule, windows, guards, modelVersion, sidecar, sidecarError)) : [];
   const roomOutlines = new Set(inventory?.data.flatMap(({ level, byId }) =>
     [...byId].filter(([, room]) => room.features.length === 1 && room.features[0].geometry?.type === 'Polygon' &&
       room.features[0].properties?.redundant !== true)
       .map(([id]) => objectId({ scope: level.id, table: 'space', id }))));
-  const results = diagnosePalResults(items, [...scalarResults, ...clearHeightResults, ...toolResults, ...overlapResults], {
+  const results = diagnosePalResults(items, [...scalarResults, ...clearHeightResults, ...toolResults, ...overlapResults,
+    ...componentResults, ...dwellingResults, ...conditionalResults], {
     levels, scale, evidence: sidecar, evidenceError: sidecarError, roomOutlines, manualRoomEntries: clearHeightInput?.entries,
   });
   const observedByTable: Record<string, number> = Object.create(null);
   for (const { object } of sidecar?.observations.values() ?? [])
     observedByTable[object.table] = (observedByTable[object.table] ?? 0) + 1;
   const executed = new Set(results.map(row => row.ruleId));
-  return { ...result, unit, results, clauseTrace: items.map(item => ({
-    id: item.id, title: item.title, source: item.source, clause: item.clause, plan: item.plan,
-    rule: item.rule ?? item.clearHeightRule ?? item.doorWidthRule ?? item.overlapRule,
-    toolId: item.libraryTool?.id, toolVersion: item.libraryTool?.version,
-    status: executed.has(item.id) ? 'executed' as const : 'pending' as const, reason: item.reason,
-  })), evidenceInventory: {
+  // These component signatures depend on a clause's inputs, regardless of other clauses included in the run.
+  const sharedEvidence = await fingerprint([raw, evidenceText]);
+  const tableHashes = new Map<string, Promise<string>>();
+  function evidenceFor(table?: string) {
+    if (!tableHashes.has(table ?? '')) {
+      const tableInput = !table ? null : table === 'space/geometry' ? inventory?.snapshot : table === 'stair/components' ? stairs?.snapshot
+        : table === 'window/sill' ? windows?.sources
+        : toolEvidence?.sources.filter(source => source.table === table)
+          .map(source => [source.level.id, source.text]);
+      tableHashes.set(table ?? '', fingerprint([sharedEvidence, tableInput]));
+    }
+    return tableHashes.get(table ?? '')!;
+  }
+  const roomReviewHashes = new Map<number, Promise<string>>();
+  function roomReviewFor(height: number) {
+    if (!roomReviewHashes.has(height)) roomReviewHashes.set(height, fingerprint(
+      [...clearHeightInput?.entries ?? []].sort().map(([key, { lowAreas, ...entry }]) => [key, entry, lowAreas[height]])));
+    return roomReviewHashes.get(height)!;
+  }
+  const levelReview = heightRules.length ? fingerprint(levels.map(level => [level.id, choices.get(level.id)])) : undefined;
+  const noReview = fingerprint(null);
+  const clauseTrace = await Promise.all(items.map(async item => {
+    const ran = executed.has(item.id);
+    const table = item.conditionalRequirementRule ? 'window/sill' : item.componentMinimumRule ? 'stair/components'
+      : item.libraryTool ? item.rule?.targetTable ?? 'door'
+      : item.clearHeightRule || item.overlapRule || item.rule?.concept === ROOM_NET_AREA ? 'space/geometry' : undefined;
+    const localReview = item.clearHeightRule ? roomReviewFor(item.clearHeightRule.nominalHeight)
+      : item.rule?.concept === HEIGHT && levelReview ? levelReview : noReview;
+    return {
+      id: item.id, title: item.title, source: item.source, clause: item.clause, plan: item.plan,
+      rule: checkRule(item), toolId: item.libraryTool?.id, toolVersion: item.libraryTool?.version,
+      status: ran ? 'executed' as const : 'pending' as const, reason: item.reason,
+      execution: ran ? await runFingerprint(item, await evidenceFor(table), await localReview) : undefined,
+    };
+  }));
+  return { ...result, unit, results, clauseTrace, evidenceInventory: {
     revision: typeof projectRevision === 'string' ? projectRevision : undefined,
     status: sidecarError ? 'invalid' as const : sidecar ? 'loaded' as const : 'missing' as const,
     error: sidecarError, observedByTable,
@@ -249,7 +300,8 @@ export async function runModelCheck(
       .filter(fact => fact.confirmed && !sidecar?.duplicate.has(JSON.stringify([objectId(fact.object), fact.concept]))).length, 0),
     applicabilityRecords: sidecar?.applicability.size ?? 0,
     roomExport: sidecar?.roomExport,
+    dwellingInventory: dwellingInventory?.inventory,
   }, exportFeedback: buildExportFeedback(items, results),
-    pending: items.filter(item => !item.rule && !item.clearHeightRule && !item.doorWidthRule && !item.overlapRule)
+    pending: items.filter(item => !checkRule(item))
       .map(item => ({ ...item, status: 'indeterminate' as const })) };
 }

@@ -20,9 +20,9 @@ function groupName({ group }: Room) {
   return { common: '共用区域', excluded: '已排除', unassigned: '待归户' }[group.kind];
 }
 
-export function PropertyBoundaryReview({ evidence, level, configText, active, locate, download }: {
+export function PropertyBoundaryReview({ evidence, level, configText, active, locate, download, onSaved }: {
   evidence: PropertyModelEvidence; level: BoundaryLevel; configText: string; active: boolean;
-  locate: (level: string, id?: string) => void; download: (name: string, text: string) => void;
+  locate: (level: string, id?: string) => void; download: (name: string, text: string) => void; onSaved: () => void;
 }) {
   const ds = useDataSource();
   const dispatch = useEditorDispatch();
@@ -130,7 +130,10 @@ export function PropertyBoundaryReview({ evidence, level, configText, active, lo
       const write = async () => {
         if (await ds.fetchText(PROPERTY_BOUNDARY_REVIEW_PATH) !== fileText)
           throw new Error('复核记录已由其他操作更新，请重新提取候选证据后再保存。');
-        if (isCurrent()) await ds.saveFile(PROPERTY_BOUNDARY_REVIEW_PATH, text);
+        if (isCurrent()) {
+          await ds.saveFile(PROPERTY_BOUNDARY_REVIEW_PATH, text);
+          onSaved();
+        }
       };
       if (navigator.locks) await navigator.locks.request(PROPERTY_BOUNDARY_REVIEW_PATH, write);
       else await write();

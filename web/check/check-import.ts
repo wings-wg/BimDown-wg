@@ -5,6 +5,9 @@ import { HEIGHT, ROOM_NET_AREA, localStoreyHeightPlan, parsePalClause, scalarBin
 import { parseToolRecipe, TOOL_PROFILES, toolId, type ToolEntry } from './core/tool-recipes.js';
 import { DOOR_WIDTH, validateDoorWidthRule, type DoorWidthRule } from './door-width.js';
 import { validateSpaceOverlapRule, type SpaceOverlapRule } from './space-overlap.js';
+import { validateComponentMinimum, type ComponentMinimumRule } from './component-minimum.js';
+import { validateDwellingMinimumRule, type DwellingMinimumRule } from './dwelling-minimum-rule.js';
+import { validateConditionalRequirement, type ConditionalRequirementRule } from './conditional-requirement.js';
 
 export { HEIGHT, ROOM_NET_AREA } from './pal-plan.js';
 type Rule = ScalarRuleSet['rules'][number];
@@ -16,6 +19,9 @@ export interface CheckItem {
   clearHeightRule?: ClearHeightRule;
   doorWidthRule?: DoorWidthRule;
   overlapRule?: SpaceOverlapRule;
+  componentMinimumRule?: ComponentMinimumRule;
+  dwellingMinimumRule?: DwellingMinimumRule;
+  conditionalRequirementRule?: ConditionalRequirementRule;
   reason?: string;
   clause?: PalClause;
   plan?: PalPlan;
@@ -45,7 +51,23 @@ function ensureItems(items: CheckItem[]) {
 export function importJsonRules(text: string, tools: readonly ToolEntry[] = []): CheckItem[] {
   const parsed = JSON.parse(text);
   if (!Array.isArray(parsed?.rules)) throw new Error('JSON 文件须包含 rules 数组。');
-  return ensureItems(parsed.rules.map((rule: (Rule & { registeredToolId?: string }) | ClearHeightRule | DoorWidthRule | SpaceOverlapRule): CheckItem => {
+  return ensureItems(parsed.rules.map((rule: (Rule & { registeredToolId?: string }) | ClearHeightRule | DoorWidthRule |
+    SpaceOverlapRule | ComponentMinimumRule | DwellingMinimumRule | ConditionalRequirementRule): CheckItem => {
+    if (rule && 'kind' in rule && rule.kind === 'conditional-requirement') {
+      validateConditionalRequirement(rule);
+      const base = { id: rule.id, source: rule.source, title: '外窗窗台与防护' };
+      return rule.reviewed ? { ...base, conditionalRequirementRule: rule } : { ...base, reason: '规则包中的条款尚未审核。' };
+    }
+    if (rule && 'kind' in rule && rule.kind === 'dwelling-count-minimum') {
+      validateDwellingMinimumRule(rule);
+      const base = { id: rule.id, source: rule.source, title: '无障碍住房配建数量' };
+      return rule.reviewed ? { ...base, dwellingMinimumRule: rule } : { ...base, reason: '规则包中的条款尚未审核。' };
+    }
+    if (rule && 'kind' in rule && rule.kind === 'component-minimum') {
+      validateComponentMinimum(rule);
+      const base = { id: rule.id, source: rule.source, title: '楼梯梯段与平台净空' };
+      return rule.reviewed ? { ...base, componentMinimumRule: rule } : { ...base, reason: '规则包中的条款尚未审核。' };
+    }
     if (rule && 'kind' in rule && rule.kind === 'space-projection-exclusion') {
       validateSpaceOverlapRule(rule);
       const base = { id: rule.id, source: rule.source, title: '跨层空间投影叠合' };
@@ -84,11 +106,31 @@ export function importJsonRules(text: string, tools: readonly ToolEntry[] = []):
 export function bindPalPlan(item: CheckItem, plan: PalPlan, tools: readonly ToolEntry[] = []): CheckItem {
   if (!item.clause) return item;
   const base = { ...item, plan, rule: undefined, clearHeightRule: undefined, doorWidthRule: undefined,
-    overlapRule: undefined, libraryTool: undefined, reason: undefined };
+    overlapRule: undefined, componentMinimumRule: undefined, dwellingMinimumRule: undefined, conditionalRequirementRule: undefined,
+    libraryTool: undefined, reason: undefined };
   if (plan.kind === 'blocked') return { ...base, reason: plan.reason };
   const common = { id: item.id, source: item.source, version: 'pal-1', reviewed: false,
     applicability: item.clause.applicability || item.clause.target || '适用范围须由审核人确认' };
   try {
+    if (plan.kind === 'conditional-requirement') {
+      const { kind, profile, sillThreshold } = plan;
+      const conditionalRequirementRule = { ...common, applicability: item.clause.applicability || '外窗',
+        kind, profile, sillThreshold };
+      validateConditionalRequirement(conditionalRequirementRule);
+      return { ...base, conditionalRequirementRule };
+    }
+    if (plan.kind === 'dwelling-count-minimum') {
+      const { kind, profile, minimumCount, minimumFraction } = plan;
+      const dwellingMinimumRule = { ...common, applicability: item.clause.applicability || '新建住宅项目',
+        kind, profile, minimumCount, minimumFraction };
+      validateDwellingMinimumRule(dwellingMinimumRule);
+      return { ...base, dwellingMinimumRule };
+    }
+    if (plan.kind === 'component-minimum') {
+      const componentMinimumRule = { ...common, kind: plan.kind, profile: plan.profile, thresholds: plan.thresholds };
+      validateComponentMinimum(componentMinimumRule);
+      return { ...base, componentMinimumRule };
+    }
     if (plan.kind === 'space-projection-exclusion') {
       const overlapRule = { ...common, kind: plan.kind };
       validateSpaceOverlapRule(overlapRule);
